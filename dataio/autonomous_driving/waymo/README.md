@@ -1,7 +1,7 @@
 
 # [neuralsim] Waymo Open Dataset
 
-https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/7b7bef89-79da-49e7-a145-293b4d407c40
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/42080c6e-6bde-4ecf-8d42-55b5fddf7be9
 
 ## v1.x API of perception training split
 
@@ -186,6 +186,6 @@ python dataio/autonomous_driving/waymo/waymo_dataset.py
 
 Some example screen recordings:
 
-https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/f5c62456-7c31-48ee-8386-0c130e4c742f
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/b502d393-dcf1-4a87-ba0f-bfa7eae26eee
 
-https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/7b7bef89-79da-49e7-a145-293b4d407c40
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/42080c6e-6bde-4ecf-8d42-55b5fddf7be9

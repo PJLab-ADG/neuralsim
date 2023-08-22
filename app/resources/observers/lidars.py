@@ -17,6 +17,7 @@ LIDAR_CLASS_NAMES = ['Lidar', 'RaysLidar']
 
 import os
 import csv
+import zipfile
 import numpy as np
 from glob import glob
 from typing import List, Tuple
@@ -392,16 +393,27 @@ class RisleyPrismLidarGenerator(AbstractLidarGenerator):
         super(RisleyPrismLidarGenerator, self).__init__('Risley_prism')
         if csv_data_dir is None:
             csv_data_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'RisleyPrismCsvData')
-        os.makedirs(csv_data_dir, exist_ok=True)
+        
+        self.url = "https://github.com/PJLab-ADG/neuralsim/releases/download/pre-release/RisleyPrismCsvData.zip"
+        self.csv_data_dir = csv_data_dir
+        
+        os.makedirs(self.csv_data_dir, exist_ok=True)
         if len(list(glob(os.path.join(csv_data_dir, "*.csv")))) == 0:
             log.warning(f"Data directory for `RisleyPrismLidarGenerator` is empty: \n{csv_data_dir}")
             log.warning("Will start downloading into it now...")
             log.warning("You can also manually download `*.csv` files into it via this link:\n"
                         "https://drive.google.com/file/d/1-EKhYQTaf3LHa4cCL_vKSVg25torT6ij/view?usp=sharing")
-            # TODO
             
+            #---- Download file
+            filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'RisleyPrismCsvData.zip')
+            torch.hub.download_url_to_file(self.url, filepath, progress=True)
+            log.warning(f"=> File downloaded to {filepath}")
             
-        self.csv_data_dir = csv_data_dir
+            #---- Unzip file
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                zip_ref.extractall(self.csv_data_dir)
+            log.warning(f"=> Files extracted to {self.csv_data_dir}")
+            
         self.csv_cycle_times = 0
         self.csv_max_sec = 4
         self.csv_cache = []

@@ -152,7 +152,7 @@ python code_single/tools/render.py --resume_dir logs/streetsurf/seg100613 \
 <details>
 <summary>An example (click to expand)</summary>
 
-<img src="https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/19468667-3c39-4b81-9dde-157e18b77892" alt="seg100613_ds=4_withmesh" width="640">
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c1767c6-6eae-41c4-a60d-2eb74ff4c4c9" alt="seg100613_ds=4_withmesh" width="640">
 
 </details>
 

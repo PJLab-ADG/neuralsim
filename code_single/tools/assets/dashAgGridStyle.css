@@ -1,0 +1,5 @@
+.ag-theme-alpine {
+    --ag-font-size: 4px !important;
+    --ag-font-family: monospace !important;
+    --ag-grid-size: 4px !important;
+}

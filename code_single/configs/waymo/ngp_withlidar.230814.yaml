@@ -1,0 +1,331 @@
+#------------------------------------------------------------
+#------------    Some shortcut configs
+#------------------------------------------------------------
+
+device_ids: -1
+
+num_rays_pixel: 4096
+num_rays_lidar: 4096
+
+near: 0.1
+far: 200.0
+depth_max: 120.0
+extend_size: 60.0
+num_coarse: 256
+upsample_inv_s: 64.0
+step_size: 0.1
+
+lidar_fn: l2_relative  # l1_log
+w_lidar: 0.1 # 0.05
+w_lidar_los: 0.01
+
+w_mask: 0.15
+
+w_sparsity: 1.0e-3
+
+num_iters: 21000
+warmup_steps: 1000
+min_factor: 0.03
+occ_init: 50.0
+occ_thre: 10.0
+
+camera_list: [camera_FRONT_LEFT, camera_FRONT, camera_FRONT_RIGHT]
+# camera_list: [camera_SIDE_LEFT, camera_FRONT_LEFT, camera_FRONT, camera_FRONT_RIGHT, camera_SIDE_RIGHT]
+lidar_list: [lidar_TOP, lidar_FRONT, lidar_REAR, lidar_SIDE_LEFT, lidar_SIDE_RIGHT]
+lidar_weight: [0.4,0.1,0.1,0.1,0.1] # Will be normalized when using
+
+#------------------------------------------------------------
+#------------    Full configs
+#------------------------------------------------------------
+exp_dir: logs/urban_ngp/seg100613_exp1
+
+dataset_cfg:
+  target: dataio.autonomous_driving.WaymoDataset
+  param:
+    # root: /nvme/guojianfei/waymo/processed/
+    root: /data1/waymo/processed/
+    # root: /home/ventus/datasets/waymo/processed/
+    rgb_dirname: images
+    lidar_dirname: lidars
+    mask_dirname: masks
+
+scenebank_cfg:
+  # NOTE: scene_id[,start_frame[,n_frames]]
+  scenarios:
+    # - segment-1172406780360799916_1660_000_1680_000_with_camera_labels
+    # - segment-4058410353286511411_3980_000_4000_000_with_camera_labels, 90
+    - segment-10061305430875486848_1080_000_1100_000_with_camera_labels, 0, 163
+    # - segment-14869732972903148657_2420_000_2440_000_with_camera_labels
+    # - segment-16646360389507147817_3320_000_3340_000_with_camera_labels
+    # - segment-15062351272945542584_5921_360_5941_360_with_camera_labels
+    # - segment-13238419657658219864_4630_850_4650_850_with_camera_labels
+    # - segment-13476374534576730229_240_000_260_000_with_camera_labels, 0, 140
+    # - segment-14424804287031718399_1281_030_1301_030_with_camera_labels
+    # - segment-15270638100874320175_2720_000_2740_000_with_camera_labels, 30
+    # - segment-15349503153813328111_2160_000_2180_000_with_camera_labels, 80
+    # - segment-15868625208244306149_4340_000_4360_000_with_camera_labels, 70
+    # - segment-16608525782988721413_100_000_120_000_with_camera_labels, 0, 120
+    # - segment-17761959194352517553_5448_420_5468_420_with_camera_labels
+    # - segment-3224923476345749285_4480_000_4500_000_with_camera_labels
+    # - segment-3425716115468765803_977_756_997_756_with_camera_labels, 0, 120
+    # - segment-3988957004231180266_5566_500_5586_500_with_camera_labels
+    # - segment-9385013624094020582_2547_650_2567_650_with_camera_labels
+    # - segment-8811210064692949185_3066_770_3086_770_with_camera_labels
+    # - segment-10275144660749673822_5755_561_5775_561_with_camera_labels
+    # - segment-10676267326664322837_311_180_331_180_with_camera_labels
+    # - segment-12879640240483815315_5852_605_5872_605_with_camera_labels
+    # - segment-13142190313715360621_3888_090_3908_090_with_camera_labels, 17
+    # - segment-13196796799137805454_3036_940_3056_940_with_camera_labels
+    # - segment-14348136031422182645_3360_000_3380_000_with_camera_labels
+    # - segment-15365821471737026848_1160_000_1180_000_with_camera_labels, 0, 170
+    # - segment-16470190748368943792_4369_490_4389_490_with_camera_labels
+    # - segment-11379226583756500423_6230_810_6250_810_with_camera_labels
+    # - segment-13085453465864374565_2040_000_2060_000_with_camera_labels
+    # - segment-14004546003548947884_2331_861_2351_861_with_camera_labels, 24
+    # - segment-15221704733958986648_1400_000_1420_000_with_camera_labels
+    # - segment-16345319168590318167_1420_000_1440_000_with_camera_labels
+  observer_cfgs: 
+    Camera:
+      list: ${camera_list}
+    RaysLidar:
+      list: ${lidar_list}
+  on_load:
+    no_objects: true # Set to true to skip loading foreground objects into scene graph
+    joint_camlidar: true
+    align_orientation: false
+    consider_distortion: true
+    joint_camlidar_equivalent_extr: true
+
+assetbank_cfg:
+  Street:
+    model_class: app.models.single.LoTDNeRFStreet
+    model_params:
+      dtype: half
+      encoding_cfg:
+        input_ch: 3
+        lotd_use_cuboid: false # NOTE: Vanilla NGP use Cubic representation instead of Cuboid
+        lotd_auto_compute_cfg:
+          type: ngp
+          target_num_params: ${eval:"32*(2**20)"} # 32 Mi params -> 64 MiB float16
+          min_res: 16
+          n_feats: 2
+          log2_hashmap_size: 20
+        param_init_cfg:
+          method: uniform_to_type
+          bound: 1.0e-4
+        anneal_cfg:
+          type: hardmask
+          start_level: -1
+          stop_it: 1000
+      extra_pos_embed_cfg:
+        type: identity
+      sigma_decoder_cfg:
+        type: mlp
+        D: 1
+        W: 64
+      n_rgb_used_output: 31
+      radiance_decoder_cfg:
+        use_pos: false
+        use_view_dirs: true
+        use_nablas: false
+        dir_embed_cfg: 
+          type: spherical
+          degree: 4
+        D: 2
+        W: 64
+      accel_cfg:
+        type: occ_grid
+        resolution: [64,64,64]
+        occ_thre_consider_mean: true # !!! Important fix
+        occ_thre: ${occ_thre}
+        ema_decay: 0.95
+        init_cfg:
+          mode: constant
+          constant_value: ${occ_init}
+        acquire_from_net_cfg:
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        acquire_from_samples_cfg: {}
+        n_steps_between_update: 16
+        n_steps_warmup: 256
+      ray_query_cfg:
+        query_mode: march_occ
+        query_param:
+          march_cfg:
+            step_size: ${step_size}
+            max_steps: 4096
+    asset_params:
+      populate_cfg:
+        use_cuboid: false # NOTE: Vanilla NGP use Cubic representation instead of Cuboid
+        extend_size: ${extend_size}
+  Sky:
+    model_class: app.models.env.SimpleSky
+    model_params: 
+      dir_embed_cfg:
+        type: sinusoidal
+        n_frequencies: 10
+        use_tcnn_backend: false
+      D: 2
+      W: 256
+      use_tcnn_backend: false
+  # #--- Pose refine related
+  # LearnableParams:
+  #   model_class: app.models.scene.LearnableParams
+  #   model_params:
+  #     refine_ego_motion: true
+  #     # ego_node_id: ego_car
+  #     ego_class_name: Camera
+  #     refine_camera_intr: false
+  #     refine_camera_extr: false
+  #     enable_after: 500
+
+renderer:
+  common:
+    with_env: true
+    with_rgb: true
+    with_normal: true
+    near: ${near} # NOTE: Critical to scene scale!
+    far: ${far}
+  train:
+    depth_use_normalized_vw: false # For meaningful depth supervision (if any)
+    perturb: true
+  val:
+    depth_use_normalized_vw: true # For correct depth rendering
+    perturb: false
+    rayschunk: 4096
+
+training:
+  #---------- Dataset and sampling
+  dataloader:
+    preload: true
+    preload_on_gpu: false
+    tags:
+      camera:
+        downscale: 1
+        list: ${camera_list}
+      rgb_mask: {}
+      rgb_human_mask: {}
+      rgb_ignore_mask:
+        ignore_not_occupied: false
+        ignore_dynamic: false
+        ignore_human: true
+      lidar:
+        list: ${lidar_list}
+        multi_lidar_merge: true
+        filter_when_preload: true
+        filter_kwargs:
+          filter_in_cams: true
+    pixel_dataset:
+      #---------- Frame and pixel dataloader
+      joint: false
+      equal_mode: ray_batch
+      num_rays: ${num_rays_pixel}
+      frame_sample_mode: uniform
+      pixel_sample_mode: error_map
+      error_map_res: [32,32]
+      uniform_sampling_fraction: 0.5
+      #---------- Joint frame-pixel dataloader
+      # joint: true
+      # equal_mode: point_batch
+      # num_rays: ${num_rays_pixel}
+      # num_points: ${eval:"2**18"} # 256 Ki
+      # error_map_res: [32,32]
+      # uniform_sampling_fraction: 0.5
+    lidar_dataset:
+      equal_mode: ray_batch
+      num_rays: ${num_rays_lidar}
+      frame_sample_mode: uniform
+      lidar_sample_mode: merged_weighted
+      multi_lidar_weight: ${lidar_weight} # Will be normalized when used
+  val_dataloader:
+    preload: false
+    tags:
+      camera:
+        downscale: 2
+        list: ${camera_list}
+      rgb_mask: {}
+      rgb_human_mask: {}
+      rgb_ignore_mask:
+        ignore_not_occupied: false
+        ignore_dynamic: false
+        ignore_human: true
+      lidar: ${training.dataloader.tags.lidar}
+    image_dataset:
+      camera_sample_mode: all_list
+      frame_sample_mode: uniform
+
+  #---------- Training losses
+  # uniform_sample: ${eval:"2**16"} # 64 Ki -> 1.6x slower training
+  uniform_sample: ${eval:"2**16"} # 64 Ki
+  losses:
+    rgb: 
+      fn_type: mse
+      respect_ignore_mask: true
+    occupancy_mask:
+      w: ${w_mask}
+      w_on_errmap: 0
+      safe_bce: true
+      pred_clip: 0
+    lidar:
+      discard_outliers_median: 100.0
+      depth: 
+        w: ${w_lidar}
+        fn_type: ${lidar_fn}
+      line_of_sight:
+        w: ${w_lidar_los}
+        fn_type: nerf
+        fn_param: {}
+    sparsity:
+      class_name_cfgs:
+        Street:
+          type: density_reg
+          lamb: 0.2
+          key: sigma
+          w: ${w_sparsity} # 1.0e-3
+    weight_reg:
+      class_name_cfgs:
+        Street:
+          norm_type: 2.0
+          w: 1.0e-6
+
+  optim:
+    default: 1.0e-3
+    Sky: 1.0e-3
+    Street: 
+      lr: 1.0e-2
+      eps: 1.0e-15
+      betas: [0.9, 0.99]
+    # #--- Pose refine related
+    # LearnableParams: 
+    #   ego_motion:
+    #     lr: 0.001
+    #     alpha_lr_rotation: 0.05
+
+  num_iters: ${num_iters}
+  scheduler:
+    #---------- exponential
+    type: exponential_step
+    num_iters: ${training.num_iters}
+    min_factor: ${min_factor}
+    warmup_steps: ${warmup_steps}
+    #---------- cosine
+    # type: warmupcosine
+    # num_iters: ${training.num_iters}
+    # min_factor: ${min_factor}
+    # warmup_steps: ${warmup_steps}
+    #---------- milestone
+    # type: multistep
+    # milestones: [20000, 30000]
+    # gamma: 0.33
+  
+  #---------- Logging and validation
+  i_val: 1000      # unit: iters
+  i_backup: -1 # unit: iters
+  i_save: 900     # unit: seconds
+  i_log: 5
+  log_grad: false
+  log_param: false
+
+  ckpt_file: null
+  ckpt_ignore_keys: []
+  ckpt_only_use_keys: null

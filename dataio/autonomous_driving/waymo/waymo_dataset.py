@@ -589,24 +589,19 @@ if __name__ == "__main__":
             joint_camlidar=True,
             joint_camlidar_equivalent_extr=True, 
         )
-        class_name_configs = {
-            'Vehicle': {'target': 'nr3d_lib.models.autodecoder.create_autodecoder', 
-                        'param': {'framework': {'target': 'app.models.base.DummyBox', 'param': {}}}}, 
-            'Pedestrian': {'target': 'nr3d_lib.models.autodecoder.create_autodecoder', 
-                        'param': {'framework': {'target': 'app.models.base.DummyBox', 'param': {}}}}, 
-            'Street': {'target': 'app.models.base.DummyBox', 'param': {}}, 
+        assetbank_cfg = ConfigDict({
+            'Vehicle': {'model_class': 'app.models.base.AD_DummyBox', 'model_params': {}}, 
+            'Pedestrian': {'model_class': 'app.models.base.AD_DummyBox', 'model_params': {}}, 
+            'Street': {'model_class': 'app.models.base.DummyBox', 'model_params': {}}, 
             # 'Distant': {}
-        }
-        assetbank_cfg = ConfigDict(
-            class_name_cfgs=class_name_configs
-        )
+        })
         
         dataset_impl: DatasetIO = import_str(dataset_cfg.target)(dataset_cfg.param)
         scene_bank, scene_bank_meta = create_scene_bank(
             dataset=dataset_impl, device=device, 
             scenebank_root=None,
             scenebank_cfg=scenebank_cfg, 
-            drawable_class_names=class_name_configs.keys(), 
+            drawable_class_names=assetbank_cfg.keys(), 
             misc_node_class_names=['node', 'EgoVehicle', 'EgoDrone'], 
         )
         scene = scene_bank[0]
@@ -632,7 +627,7 @@ if __name__ == "__main__":
                 )
             ))
         asset_bank = AssetBank(assetbank_cfg)
-        asset_bank.create_asset_bank(scene_bank, scene_bank_meta, load_assets_into_scene=True)
+        asset_bank.create_asset_bank(scene_bank, load_assets_into_scene=True)
         scene.load_assets(asset_bank)
         return scene_bank, scene_dataloader
 
@@ -736,8 +731,8 @@ if __name__ == "__main__":
         plt.imshow(im, vmin=0., vmax=1.)
         plt.show()
 
-    test_scenegraph()
-    # test_scenario()
+    # test_scenegraph()
+    test_scenario()
     # test_lidar()
     # test_mask()
     # test_distort()

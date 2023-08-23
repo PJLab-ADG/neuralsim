@@ -14,6 +14,7 @@ from nr3d_lib.logger import Logger
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.base import ModelMixin
 from nr3d_lib.models.spatial.aabb import AABBSpace
+from nr3d_lib.models.autodecoder import AutoDecoderMixin
 
 from app.resources import Scene, SceneNode
 
@@ -106,14 +107,25 @@ class DummyBox(AssetModelMixin, nn.Module):
     A dummy model that only has space
     """
     is_ray_query_supported = False
-    def __init__(self, bounding_size: float = 2.0) -> None:
+    assigned_to = AssetAssignment.OBJECT
+    def __init__(self, bounding_size: float = 2.0, device=None) -> None:
         super().__init__()
-        self.space = AABBSpace(bounding_size=bounding_size)
+        self.space = AABBSpace(bounding_size=bounding_size, device=device)
         self.dummy = 2
 
     @classmethod
     def compute_model_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
         return f"{cls.__name__}#{class_name or obj.class_name}#{scene.id}#{obj.id}"
+
+class AD_DummyBox(AutoDecoderMixin, DummyBox):
+    """
+    A dummy shared model that only has space
+    """
+    is_ray_query_supported = False
+    assigned_to = AssetAssignment.MULTI_OBJ
+    @classmethod
+    def compute_model_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
+        return f"{cls.__name__}#{class_name or obj.class_name}"
 
 if __name__ == "__main__":
     def unit_test():

@@ -833,7 +833,7 @@ class Scene(object):
         if self.main_class_name in self.drawable_groups_by_class_name.keys():
             main_obj = self.drawable_groups_by_class_name[self.main_class_name][0]
             if main_obj.model is not None:
-                aabb = (main_obj.scale.ratio() * main_obj.space.aabb).data.cpu().numpy().T.reshape(-1).tolist()
+                aabb = (main_obj.scale.ratio() * main_obj.model.space.aabb).data.cpu().numpy().T.reshape(-1).tolist()
                 scene_box = vedo.Box(size=aabb)
                 scene_box.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy())
         if scene_box is None:

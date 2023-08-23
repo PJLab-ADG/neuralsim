@@ -11,6 +11,7 @@ __all__ = [
 import os
 import re
 import numpy as np
+from copy import deepcopy
 from numbers import Number
 from typing import Dict, List, Tuple, Union, Type
 
@@ -32,7 +33,7 @@ class AssetBank(nn.ModuleDict):
         super().__init__()
         self._param_groups: List[dict] = []
         self._clip_grad_groups: List[dict] = []
-        self.config = config.deepcopy()
+        self.config = deepcopy(config)
         self.misc_node_class_names = ['node', 'EgoVehicle', 'EgoDrone']
         # {class_name: [  [model_id, [[scene_id, obj_id], [...]]],   [...]  ]}
         self.class_name_infos: Dict[str, Dict[str, List[Tuple[str, str]]]] = {}

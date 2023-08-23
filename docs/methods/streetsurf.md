@@ -34,6 +34,8 @@ The official implementation of "StreetSurf: Extending Multi-view Implicit Surfac
 
 ### Major settings
 
+> NOTE: To use pretrained models for evaluation, you need to specify your local dataset path with `--dataset_cfg.param.root=/path/to/waymo/processed`. Otherwise if you don't want to load GT data, you need to specify `--no_gt` when running `render.py`.
+
 | Settings                                                     | Config file & Pretrained models                              | Camera images                        | Sky mask               | LiDAR ranges                | Monocular normals      | Monocular depths       |
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------ | ---------------------- | --------------------------- | ---------------------- | ---------------------- |
 | Multi-view reconstruction with LiDAR                         | [withmask_withlidar.230814.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml)<br/>Pretrained: [[baidu:`h6he`]](https://pan.baidu.com/s/1VwFdapaoK1wVZLPqN5zsXA)\|[[google]](https://drive.google.com/file/d/13OOE452fGd3-GruI0rvRRPXjXnKG1L2k/view?usp=sharing)  | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes | :white_check_mark: 5 LiDARs |                        |                        |

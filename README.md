@@ -94,7 +94,7 @@ Code: [app/resources/scenes.py](app/resources/scenes.py)  [app/resources/nodes.p
 
 To streamline the organization of assets and transformations, we adopt the concept of generic scene graphs used in modern graphics engines like [magnum](https://doc.magnum.graphics/magnum/scenegraph.html).
 
-Any entity that possesses a pose or position is considered a node. Certain nodes are equipped with special functionalities, such as camera operations or drawable models.
+Any entity that possesses a pose or position is considered a node. Certain nodes are equipped with special functionalities, such as camera operations or drawable models (i.e. renderable assets in `AssetBank`).
 
 ![scene_graph](media/scene_graph.png)
 

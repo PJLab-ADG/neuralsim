@@ -15,6 +15,13 @@ An **unofficial** and improved implementation of "NeuS: Learning Neural Implicit
 }
 ```
 
+## Highlights (demo coming soon!)
+
+- Stable training within 10 minutes without necessarily needing mask
+- Worried about your camera pose accuracy ? We can refine them !
+- Worried about your footage quality & consistency ? We have in the wild image embeddings !
+- Object-centric, indoor or outdoors ? We can cover them all !
+
 ## Object-centric datasets
 
 ### Requirements

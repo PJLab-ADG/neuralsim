@@ -20,6 +20,7 @@ An **unofficial** and improved implementation of "NeuS: Learning Neural Implicit
 - Stable training within 10 minutes without necessarily needing mask
 - Worried about your camera pose accuracy ? We can refine them !
 - Worried about your footage quality & consistency ? We have in the wild image embeddings !
+- Worried about geometric distortions like depressions or bulges (凹坑或鼓包) ? We opt to use monocular normal priors !
 - Object-centric, indoor or outdoors ? We can cover them all !
 
 ## Object-centric datasets

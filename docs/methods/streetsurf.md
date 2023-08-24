@@ -15,6 +15,9 @@ The official implementation of "StreetSurf: Extending Multi-view Implicit Surfac
 }
 ```
 
+Check out this video [here](https://youtu.be/GEkW5mYd5YY?si=hmXz6cxrACS_Ho1s)
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/3f4fc0bb-937b-471a-83d3-c8e41681f4c5" alt="streetsurf_waymo_static_32" >
+
 ## Usage
 
 ### Requirements

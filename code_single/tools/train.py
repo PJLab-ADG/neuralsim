@@ -368,7 +368,7 @@ class Trainer(nn.Module):
         #-----------------------------------------------
         
         obj = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
-        obj_raw_ret = ret['raw_per_obj'][obj.id]
+        obj_raw_ret = ret['raw_per_obj_model'][obj.id]
         model = obj.model
 
         #-----------------------------------------------
@@ -481,7 +481,7 @@ class Trainer(nn.Module):
         #-----------------------------------------------
 
         obj = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
-        obj_raw_ret = ret['raw_per_obj'][obj.id]
+        obj_raw_ret = ret['raw_per_obj_model'][obj.id]
         model = obj.model
 
         #-----------------------------------------------
@@ -588,7 +588,7 @@ class Trainer(nn.Module):
         #-----------------------------------------------
         
         obj = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
-        obj_raw_ret = ret['raw_per_obj'][obj.id]
+        obj_raw_ret = ret['raw_per_obj_model'][obj.id]
         model = obj.model
         
         #-----------------------------------------------
@@ -1142,7 +1142,7 @@ def main_function(args: ConfigDict):
                         # Log raw buffer
                         logger.add_nested_dict(f"train_step_pixel.scene={scene.id}", d=ret['volume_buffer'], it=local_it)
                         # Log per object
-                        for obj_id, raw_ret in ret['raw_per_obj'].items():
+                        for obj_id, raw_ret in ret['raw_per_obj_model'].items():
                             logger.add_nested_dict(f"train_step_pixel.obj={obj_id}", d=raw_ret, it=local_it)
 
                 del scene, losses, ret, sample, ground_truth
@@ -1192,7 +1192,7 @@ def main_function(args: ConfigDict):
                         # Log raw buffer
                         logger.add_nested_dict(f"train_step_lidar.scene={scene.id}", d=ret['volume_buffer'], it=local_it)
                         # Log per object
-                        for obj_id, raw_ret in ret['raw_per_obj'].items():
+                        for obj_id, raw_ret in ret['raw_per_obj_model'].items():
                             logger.add_nested_dict(f"train_step_lidar.obj={obj_id}", d=raw_ret, it=local_it)
                 del scene, losses, ret, sample, ground_truth
 
@@ -1241,7 +1241,7 @@ def main_function(args: ConfigDict):
                         # Log raw buffer
                         logger.add_nested_dict(f"train_step_image_patch.scene={scene.id}", d=ret['volume_buffer'], it=local_it)
                         # Log per object
-                        for obj_id, raw_ret in ret['raw_per_obj'].items():
+                        for obj_id, raw_ret in ret['raw_per_obj_model'].items():
                             logger.add_nested_dict(f"train_step_image_patch.obj={obj_id}", d=raw_ret, it=local_it)
                 del scene, losses, ret, sample, ground_truth
 

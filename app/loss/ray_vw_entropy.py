@@ -48,15 +48,15 @@ class RayVisWeightEntropyRegLoss(nn.Module):
         w = self.w if self.w_fn is None else self.w_fn(it=it)
         
         ret_losses = dict()
-        raw_per_obj = ret['raw_per_obj']
+        raw_per_obj_model = ret['raw_per_obj_model']
         if 'total' in self.mode:
             ret_losses['loss_entropy'] = w * self.fn(ret['volume_buffer'])
         if 'cr' in self.mode:
             main_class_name = scene.main_class_name
             cr_obj_id = scene.drawable_groups_by_class_name[main_class_name][0].id
-            ret_losses[f'loss_entropy.{main_class_name}'] = w * self.fn_in_total(raw_per_obj[cr_obj_id]['volume_buffer'])
+            ret_losses[f'loss_entropy.{main_class_name}'] = w * self.fn_in_total(raw_per_obj_model[cr_obj_id]['volume_buffer'])
         if 'dv' in self.mode:
             dv_class_name = 'Distant'
             dv_obj_id = scene.drawable_groups_by_class_name[dv_class_name][0].id
-            ret_losses[f'loss_entropy.{dv_class_name}'] = w * self.fn_in_total(raw_per_obj[dv_obj_id]['volume_buffer'])
+            ret_losses[f'loss_entropy.{dv_class_name}'] = w * self.fn_in_total(raw_per_obj_model[dv_obj_id]['volume_buffer'])
         return ret_losses

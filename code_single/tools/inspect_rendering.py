@@ -29,6 +29,7 @@ def set_env(depth: int):
 set_env(2)
 
 import torch
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import dash
@@ -64,6 +65,7 @@ fg_query_cfg = None
 x = None
 y = None
 
+sphere_trace_cfg = ConfigDict(distance_scale=25., min_step=.2, max_march_iters=500, drop_alive_rate=0.)
 
 def Header(name, app):
     title = html.H2(name, style={"margin-top": 5})
@@ -94,7 +96,7 @@ def render(cam, sphere_trace=False):
         bypass_ray_query_cfg = ConfigDict({
             obj.class_name: ConfigDict({
                 "query_mode": "sphere_trace",
-                "query_param": ConfigDict(debug=True),
+                "query_param": ConfigDict(**sphere_trace_cfg, debug=True),
             })
         })
         renderer_ret = renderer.render(scene, observer=cam, render_per_obj=True, rayschunk=0,
@@ -133,7 +135,7 @@ def color_sdf(d: torch.Tensor, include_iso=True):
 
 
 def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, near: float, far: float,
-             n: int, plot_n: bool = False):
+             n: int, plot_n: bool = False, plot_slope: bool = False):
     rays_o, rays_d = scene.convert_rays_in_node(ray_o[None], ray_d[None], obj)
     rays_o, rays_d = obj_space.normalize_rays(rays_o, rays_d)
     rays_tested = obj_space.ray_test(rays_o, rays_d, near, far, normalized=True)
@@ -151,6 +153,9 @@ def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, near: flo
     fig.add_trace(go.Scatter(x=t, y=d, mode='lines', name="SDF", showlegend=False))
     if plot_n:
         fig.add_trace(go.Scatter(x=t, y=nablas, mode='lines', name="SDF Grad", yaxis="y2"))
+    if plot_slope:
+        fig.add_trace(go.Scatter(x=t, y=np.abs(np.gradient(d, t)), mode='lines', name="SDF Slope",
+                                 yaxis="y2"))
     fig.update_xaxes(title="Depth", type='linear',
                      range=[rays_tested["near"][0].item(), rays_tested["far"][0].item()])
     fig.update_yaxes(title="SDF", type='linear', range=[-0.03, 0.03])
@@ -231,29 +236,44 @@ def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tens
 def plot_sphere_trace_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tensor, ray_d: torch.Tensor):
     rays_o, rays_d = scene.convert_rays_in_node(ray_o[None], ray_d[None], obj)
     rays_o, rays_d = obj_space.normalize_rays(rays_o, rays_d)
-    # Scale rays direction to unit length
-    dir_norm = rays_d.norm(dim=-1)
-    rays_d = rays_d / dir_norm[..., None]
-    near = camera.near * dir_norm
-    far = camera.far * dir_norm
+    near = camera.near
+    far = camera.far
     
     ray_tested = obj_space.ray_test(rays_o, rays_d, near, far, normalized=True)
-    tracer = SphereTracer(DenseGrid(*obj_occ.resolution, obj_occ.occ_grid))
+    tracer = SphereTracer(DenseGrid(*obj_occ.resolution, obj_occ.occ_grid), **sphere_trace_cfg)
     rays_hit = tracer.trace(ray_tested, obj_model.forward_sdf,
                             print_debug_log=True, debug_trace_data=(trace_data := []))
 
-    trace_depths = [
-        (trace_data[i]["rays_alive"]["t"][0] / dir_norm).item()
-        for i in range(len(trace_data))
-    ]
-    trace_sdfs = [trace_data[i]["raw_d"][0].item() for i in range(len(trace_data))]
-    fig.add_trace(go.Scatter(x=trace_depths, y=trace_sdfs,
-                             name=f"{len(trace_depths)} Trace Samples", mode='markers',
-                             marker={"color": list(range(len(trace_depths)))}))
+    if (len(trace_data) > 0):
+        trace_depths = np.array([
+            trace_data[i]["rays_alive"]["t"][0].item()
+            for i in range(len(trace_data))
+        ])
+        trace_sdfs = np.array([trace_data[i]["d"][0].item() for i in range(len(trace_data))])
+        trace_debug_status = [
+            ["ALIVE", "HIT", "OUT"][trace_data[i]["rays_alive"]["debug_status"][0].item()]
+            for i in range(len(trace_data))
+        ]
+        trace_debug_flags = [
+            trace_data[i]["rays_alive"]["debug_flag"][0].item()
+            for i in range(len(trace_data))
+        ]
+        if rays_hit["idx"].numel() > 0:
+            rays_hit_d = obj_model.forward_sdf(rays_hit["pos"])
+            trace_depths = np.concatenate([trace_depths, rays_hit["t"].cpu().numpy()])
+            trace_sdfs = np.concatenate([trace_sdfs, rays_hit_d["sdf"].cpu().numpy()])
+            trace_debug_status += ["HIT"]
+            trace_debug_flags += [255]
+
+        for i in range(min(50, trace_depths.shape[0])):
+            print(f"{trace_depths[i]}\t{trace_sdfs[i]}\t{trace_debug_status[i]}\t{trace_debug_flags[i]}")
+        fig.add_trace(go.Scatter(x=trace_depths, y=trace_sdfs,
+                                name=f"{len(trace_depths)} Trace Samples", mode='markers',
+                                marker={"color": list(range(len(trace_depths)))}))
     
     fig.update_layout(yaxis2=dict(anchor="x", overlaying="y", side="right", range=[-0.05, 1.05]))
     if rays_hit["idx"].numel() > 0:
-        fig.add_trace(go.Scatter(x=[trace_depths[-1]] * 2, y=[0., 1.],
+        fig.add_trace(go.Scatter(x=[rays_hit["t"][0].item()] * 2, y=[0., 1.],
                                  mode="lines", name="Depth-Predicted", yaxis="y2",
                                  line=go.scatter.Line(color="rebeccapurple", width=3)))
 
@@ -419,12 +439,14 @@ def create_app():
         ], lg=2, md=4),
     ]
     render_cfg_controls = [
+        html.P("Volume Rendering Config", className="lead"),
+        html.Hr(),
         dbc.Row([
             dbc.Label("March Step Size", html_for="march-step-size", width=4),
-            dbc.Col(dcc.Slider(0.01, 0.2, 0.01,
+            dbc.Col(dcc.Slider(0.01, 0.4, 0.01,
                                value=fg_query_cfg["query_param"]["march_cfg"]["step_size"],
                                id="march-step-size",
-                               marks={i: str(i) for i in [0.01, 0.05, 0.1, 0.15, 0.2]},
+                               marks={i: str(i) for i in [0.01, 0.1, 0.2, 0.3, 0.4]},
                                tooltip={"placement": "bottom", "always_visible": True})),
         ], className="mb-3",),
         dbc.Row([
@@ -462,6 +484,36 @@ def create_app():
             dbc.Col(dbc.Input(id="upsample-inv-s-factors",
                               value=",".join([str(val) for val in fg_query_cfg["query_param"]["upsample_inv_s_factors"]])),
                     width=8),
+        ], className="mb-3",),
+        html.P("Sphere Tracing Config", className="lead"),
+        html.Hr(),
+        dbc.Row([
+            dbc.Label("Distance Scale", html_for="spheretrace-distance-scale", width=4),
+            dbc.Col(dbc.Input(id="spheretrace-distance-scale", value=sphere_trace_cfg["distance_scale"]), width=8),
+        ], className="mb-3",),
+        dbc.Row([
+            dbc.Label("March Step Size", html_for="spheretrace-min-step", width=4),
+            dbc.Col(dcc.Slider(0.01, 0.4, 0.01,
+                               value=sphere_trace_cfg["min_step"],
+                               id="spheretrace-min-step",
+                               marks={i: str(i) for i in [0.01, 0.1, 0.2, 0.3, 0.4]},
+                               tooltip={"placement": "bottom", "always_visible": True})),
+        ], className="mb-3",),
+        dbc.Row([
+            dbc.Label("Max Iterations", html_for="spheretrace-max-march-iters", width=4),
+            dbc.Col(dcc.Slider(10, 500, 1,
+                               value=sphere_trace_cfg["max_march_iters"],
+                               id="spheretrace-max-march-iters",
+                               marks={i: str(i) for i in [10, 50, 100, 200, 500]},
+                               tooltip={"placement": "bottom", "always_visible": True})),
+        ], className="mb-3",),
+        dbc.Row([
+            dbc.Label("Drop Alives (%)", html_for="spheretrace-drop-alive-rate", width=4),
+            dbc.Col(dcc.Slider(0, 1, 0.01,
+                               value=sphere_trace_cfg["drop_alive_rate"] * 100.,
+                               id="spheretrace-drop-alive-rate",
+                               marks={i: str(i) for i in [0, 0.25, 0.5, 0.75, 1]},
+                               tooltip={"placement": "bottom", "always_visible": True})),
         ], className="mb-3",),
         dbc.Row(dbc.Spinner(dbc.Col(dbc.Button("Apply", color="primary", id="apply-render-config"),
                                     className="d-grid gap-2")))
@@ -610,12 +662,18 @@ def create_app():
         State("upsample-inv-s", "value"),
         State("upsample-inv-s-factors", "value"),
         State("march-step-size", "value"),
+        State("spheretrace-distance-scale", "value"),
+        State("spheretrace-min-step", "value"),
+        State("spheretrace-max-march-iters", "value"),
+        State("spheretrace-drop-alive-rate", "value"),
         State("local", "data"),
     )
     @torch.no_grad()
     def update_graphs(frame_index, camera_id, perspective_warp, rgb_graph_click, sp_rgb_graph_click,
                       apply_render_config_click, coarse_samples, up_samples,
                       forward_inv_s, upsample_inv_s, upsample_inv_s_factors, march_step_size,
+                      spheretrace_distance_scale, spheretrace_min_step, spheretrace_max_march_iters,
+                      spheretrace_drop_alive_rate,
                       local_data):
         global rgb_fig, sp_rgb_fig, x, y
 
@@ -639,6 +697,10 @@ def create_app():
             fg_query_cfg["query_param"]["upsample_inv_s_factors"] = \
                 [float(val) for val in upsample_inv_s_factors.split(",")]
             fg_query_cfg["query_param"]["march_cfg"]["step_size"] = march_step_size
+            sphere_trace_cfg["distance_scale"] = float(spheretrace_distance_scale)
+            sphere_trace_cfg["min_step"] = float(spheretrace_min_step)
+            sphere_trace_cfg["max_march_iters"] = int(spheretrace_max_march_iters)
+            sphere_trace_cfg["drop_alive_rate"] = float(spheretrace_drop_alive_rate) / 100.
             rgb_fig = None
             sp_rgb_fig = None
         elif ctx.triggered_id == "graph-rgb":
@@ -709,7 +771,7 @@ def create_app():
         plot_volume_render_samples(ray_plot_fig, camera, rays_o[y, x], rays_d[y, x])
 
         sp_plot_fig = go.Figure()
-        plot_sdf(sp_plot_fig, rays_o[y, x], rays_d[y, x], camera.near, camera.far, 1000, True)
+        plot_sdf(sp_plot_fig, rays_o[y, x], rays_d[y, x], camera.near, camera.far, 1000, True, True)
         plot_sphere_trace_samples(sp_plot_fig, camera, rays_o[y, x], rays_d[y, x])
 
         return rgb_fig, sp_rgb_fig, slice_hor_fig, slice_ver_fig, ray_plot_fig, sp_plot_fig, \
@@ -732,9 +794,10 @@ if __name__ == "__main__":
     obj_space: AABBSpace = obj_model.space
 
     # print("Regenerate Occgrid...")
-    # resolution = [256, 256, 256] #obj.model.accel.occ.resolution.tolist()
+    # print("Original resolution: ", obj_model.accel.occ.resolution.tolist())
+    # resolution = (obj.model.accel.occ.resolution * 2).tolist()
     # obj_model.accel.occ = OccupancyGridEMA(
-    #     resolution, occ_val_fn_cfg=ConfigDict(type='raw_sdf'), occ_thre=1. - 0.0015, 
+    #     resolution, occ_val_fn_cfg=ConfigDict(type='raw_sdf'), occ_thre=1. - 0.002, 
     #     init_cfg=ConfigDict(num_steps=256, num_pts=2**25, mode='from_net'))
     # obj_model.accel.occ.initialize(
     #     val_query_fn=lambda x: obj_model.forward_sdf(x, ignore_update=True)['sdf'],
@@ -761,4 +824,4 @@ if __name__ == "__main__":
     fg_query_cfg["forward_inv_s"] = obj.model.forward_inv_s().item()
 
     app = create_app()
-    app.run(debug=False)
+    app.run(debug=False, port="8051")

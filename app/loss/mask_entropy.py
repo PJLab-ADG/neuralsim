@@ -51,7 +51,7 @@ class MaskEntropyRegLoss(nn.Module):
         eps = self.eps
         
         if self.mode not in ['crisp']:
-            raw_per_obj = ret['raw_per_obj']
+            raw_per_obj_model = ret['raw_per_obj_model']
             assert 'Distant' in scene.drawable_groups_by_class_name.keys(), f"mask_entropy mode={self.mode} only functions in cr-dv joint training."
             main_class_name = scene.main_class_name
             dv_class_name = 'Distant'
@@ -68,11 +68,11 @@ class MaskEntropyRegLoss(nn.Module):
 
             if 'cr' in self.mode:
                 # Sum of visibility weights of cr in total rendering
-                mask_pred_cr = volume_render_mask(raw_per_obj[cr_obj_id]['volume_buffer'])
+                mask_pred_cr = volume_render_mask(raw_per_obj_model[cr_obj_id]['volume_buffer'])
             
             if 'dv' in self.mode:
                 # Sum of visibility weights of dv in total rendering
-                mask_pred_dv = volume_render_mask(raw_per_obj[dv_obj_id]['volume_buffer'])
+                mask_pred_dv = volume_render_mask(raw_per_obj_model[dv_obj_id]['volume_buffer'])
         
         if self.mode == 'cross_cr_on_dv':
             loss = (mask_pred_cr * torch.log(mask_pred_dv.clamp_min(eps))).mean()

@@ -177,8 +177,6 @@ def main_function(args: ConfigDict):
     # Test correct.
     ground_truth = scene_dataloader.get_rgb_gts(scene.id, cam_id_list[0], 0)
     # Collect rgb eval scores
-    all_psnr = dict()
-    all_ssim = dict()
     all_mask_metric = dict()
     all_fg_psnr_only_in_mask = dict()
     all_fg_psnr = dict()
@@ -189,8 +187,6 @@ def main_function(args: ConfigDict):
     all_full_psnr = dict()
     all_full_ssim = dict()
     for cam_id in cam_id_list:
-        all_psnr[cam_id] = []
-        all_ssim[cam_id] = []
         all_mask_metric[cam_id] = []
         all_fg_psnr_only_in_mask[cam_id] = []
         all_fg_psnr[cam_id] = []
@@ -239,19 +235,17 @@ def main_function(args: ConfigDict):
                 eval_rgb_pred = rendered['rgb_volume'].view(cam.intr.H, cam.intr.W, -1)
                 eval_rgb_gt = ground_truth['rgb'].to(device).view(eval_rgb_pred.shape)
                 
-                if 'rgb_mask' not in ground_truth or args.eval_mask_mode == 'full':
-                    psnr = PSNR(eval_rgb_pred, eval_rgb_gt).item()
-                    ssim = SSIM(eval_rgb_pred, eval_rgb_gt).item()
-                elif 'rgb_mask' in ground_truth:
+                full_psnr = PSNR(eval_rgb_pred, eval_rgb_gt).item()
+                full_ssim = SSIM(eval_rgb_pred, eval_rgb_gt).item()
+                all_full_psnr[cam_id].append(full_psnr)
+                all_full_ssim[cam_id].append(full_ssim)
+                
+                if 'rgb_mask' in ground_truth:
+                    # NOTE: If there is a ground truth mask, we can seperately evaluate fg & bg
                     eval_rgb_mask_pred = rendered['mask_volume'].view(cam.intr.H, cam.intr.W, 1)
                     eval_rgb_mask_gt = ground_truth['rgb_mask'].to(device).view(*eval_rgb_mask_pred.shape)
                     mean_bce = safe_binary_cross_entropy(eval_rgb_mask_pred, eval_rgb_mask_gt.float(), reduction='mean').item()
                     all_mask_metric[cam_id].append(mean_bce)
-                    
-                    full_psnr = PSNR(eval_rgb_pred, eval_rgb_gt).item()
-                    full_ssim = SSIM(eval_rgb_pred, eval_rgb_gt).item()
-                    all_full_psnr[cam_id].append(full_psnr)
-                    all_full_ssim[cam_id].append(full_ssim)
                     
                     fg_eval_pred = rendered['rgb_volume_occupied'].view(cam.intr.H, cam.intr.W, -1)
                     fg_eval_gt = eval_rgb_gt * eval_rgb_mask_gt.view(*eval_rgb_gt.shape[:-1], 1)
@@ -287,21 +281,6 @@ def main_function(args: ConfigDict):
                     all_bg_psnr[cam_id].append(bg_psnr)
                     all_bg_ssim[cam_id].append(bg_ssim)
 
-                    if args.eval_mask_mode == 'fg':
-                        psnr = fg_psnr if not args.eval_fg_only_in_mask else fg_psnr_only_in_mask
-                        ssim = fg_ssim if not args.eval_fg_only_in_mask else fg_ssim_only_in_mask
-                    elif args.eval_mask_mode == 'bg':
-                        psnr = bg_psnr
-                        ssim = bg_ssim
-                    elif args.eval_mask_mode == 'full':
-                        psnr = full_psnr
-                        ssim = full_ssim
-                    else:
-                        raise RuntimeError(f"Invalid eval_mask_mode={args.eval_mask_mode}")
-                        
-                all_psnr[cam_id].append(psnr)
-                all_ssim[cam_id].append(ssim)
-                
                 if not args.with_distant_depth:
                     # Since distant depth is usally messy and in-accurate
                     mask_volume = to_img(main_rendered_in_total['mask_volume'])
@@ -335,8 +314,8 @@ def main_function(args: ConfigDict):
 
     # Metrics
     #--------------- PSNR
-    total_psnr_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_psnr.items()}
-    total_psnr = np.array(list((total_psnr_per_cam.values()))).mean()
+    total_full_psnr_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_full_psnr.items()}
+    total_full_psnr = np.array(list((total_full_psnr_per_cam.values()))).mean()
     if len(next(iter(all_fg_psnr.values()))) > 0:
         total_fg_psnr_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_fg_psnr.items()}
         total_fg_psnr = np.array(list((total_fg_psnr_per_cam.values()))).mean()
@@ -344,31 +323,18 @@ def main_function(args: ConfigDict):
         total_fg_psnr_only_in_mask = np.array(list((total_fg_psnr_only_in_mask_per_cam.values()))).mean()
         total_bg_psnr_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_bg_psnr.items()}
         total_bg_psnr = np.array(list((total_bg_psnr_per_cam.values()))).mean()
-        total_full_psnr_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_full_psnr.items()}
-        total_full_psnr = np.array(list((total_full_psnr_per_cam.values()))).mean()
     else:
         total_fg_psnr = None
         total_fg_psnr_only_in_mask = None
         total_bg_psnr = None
-        total_full_psnr = None
     
     psnr_f = os.path.join(vid_root, f'{name}.txt')
     with open(psnr_f, 'w') as f:
-        f.write(f"{total_psnr:.4f}\n")
+        f.write(f"full: {total_full_psnr:.4f}\n")
         if total_fg_psnr is not None:
             f.write(f"fg: {total_fg_psnr:.4f}\n")
             f.write(f"fg_only_in_mask: {total_fg_psnr_only_in_mask:.4f}\n")
             f.write(f"bg: {total_bg_psnr:.4f}\n")
-            f.write(f"full: {total_full_psnr:.4f}\n")
-        
-        f.write("overall".center(40, '=') + '\n')
-        for cam_id, vals in all_psnr.items():
-            f.write(f"{cam_id}: {total_psnr_per_cam[cam_id]:.4f}\n")
-        for cam_id, vals in all_psnr.items():
-            f.write('='*40 + '\n')
-            f.write(f"{cam_id}: {total_psnr_per_cam[cam_id]:.4f}\n")
-            f.writelines([f"{v:.4f}\n" for v in vals])
-            f.write("\n")
         
         if total_fg_psnr is not None:
             f.write("fg".center(40, '=') + '\n')
@@ -410,8 +376,8 @@ def main_function(args: ConfigDict):
     
     
     #--------------- SSIM
-    total_ssim_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_ssim.items()}
-    total_ssim = np.array(list((total_ssim_per_cam.values()))).mean()
+    total_full_ssim_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_full_ssim.items()}
+    total_full_ssim = np.array(list((total_full_ssim_per_cam.values()))).mean()
     if len(next(iter(all_fg_ssim.values()))) > 0:
         total_fg_ssim_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_fg_ssim.items()}
         total_fg_ssim = np.array(list((total_fg_ssim_per_cam.values()))).mean()
@@ -419,31 +385,18 @@ def main_function(args: ConfigDict):
         total_fg_ssim_only_in_mask = np.array(list((total_fg_ssim_only_in_mask_per_cam.values()))).mean()
         total_bg_ssim_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_bg_ssim.items()}
         total_bg_ssim = np.array(list((total_bg_ssim_per_cam.values()))).mean()
-        total_full_ssim_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_full_ssim.items()}
-        total_full_ssim = np.array(list((total_full_ssim_per_cam.values()))).mean()
     else:
         total_fg_ssim = None
         total_fg_ssim_only_in_mask = None
         total_bg_ssim = None
-        total_full_ssim = None
     
     ssim_f = os.path.join(vid_root, f'{name}.txt')
     with open(ssim_f, 'w') as f:
-        f.write(f"{total_ssim:.4f}\n")
+        f.write(f"full: {total_full_ssim:.4f}\n")
         if total_fg_ssim_only_in_mask is not None:
             f.write(f"fg: {total_fg_ssim:.4f}\n")
             f.write(f"fg_only_in_mask: {total_fg_ssim_only_in_mask:.4f}\n")
             f.write(f"bg: {total_bg_ssim:.4f}\n")
-            f.write(f"full: {total_full_ssim:.4f}\n")
-        
-        f.write("overall".center(40, '=') + '\n')
-        for cam_id, vals in all_ssim.items():
-            f.write(f"{cam_id}: {total_ssim_per_cam[cam_id]:.4f}\n")
-        for cam_id, vals in all_ssim.items():
-            f.write('='*40 + '\n')
-            f.write(f"{cam_id}: {total_ssim_per_cam[cam_id]:.4f}\n")
-            f.writelines([f"{v:.4f}\n" for v in vals])
-            f.write("\n")
         
         if total_fg_ssim_only_in_mask is not None:
             f.write("fg".center(40, '=') + '\n')
@@ -486,17 +439,15 @@ def main_function(args: ConfigDict):
     
     #--------------- MISC
     misc = {}
-    misc['psnr'] = total_psnr
+    misc['full_psnr'] = total_full_psnr
     misc['fg_psnr'] = total_fg_psnr
     misc['fg_psnr_only_in_mask'] = total_fg_psnr_only_in_mask
     misc['bg_psnr'] = total_bg_psnr
-    misc['full_psnr'] = total_full_psnr
     
-    misc['ssim'] = total_ssim
+    misc['full_ssim'] = total_full_ssim
     misc['fg_ssim'] = total_fg_ssim
     misc['fg_ssim_only_in_mask'] = total_fg_ssim_only_in_mask
     misc['bg_ssim'] = total_bg_ssim
-    misc['full_ssim'] = total_full_ssim
     
     total_mask_per_cam = {cam_id: (np.array(vals).mean() if len(vals) > 0 else 0) for cam_id, vals in all_mask_metric.items()}
     total_mask_metric = np.array(list((total_mask_per_cam.values()))).mean()
@@ -555,8 +506,6 @@ def main_function(args: ConfigDict):
         frame_per_obs_1c_all = np.concatenate(frame_per_obs_1c_all, axis=2)
         write_video(os.path.join(vid_root, f"{name}_1c_all.mp4"), frame_per_obs_1c_all)
     
-    return total_psnr, total_ssim
-
 def make_parser():
     bc = BaseConfig()
     
@@ -567,7 +516,6 @@ def make_parser():
 
     bc.parser.add_argument("--no_output", action='store_true', help="If set, the rendered video will not be saved.")
     bc.parser.add_argument("--no_sky", action='store_true', help="If set, the sky model will not be rendered.")
-    bc.parser.add_argument("--eval_mask_mode", type=str, default='fg')
     bc.parser.add_argument("--eval_fg_only_in_mask", action='store_true')
     bc.parser.add_argument("--eval_non_occupied_mode", type=str, default='black')
     bc.parser.add_argument("--progress", action='store_true', help="If set, shows per frame progress.")

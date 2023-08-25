@@ -79,13 +79,21 @@ class SparsityLoss(nn.Module):
         return ret_losses
         
     def forward_code_multi(self, scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
-        ret_losses = {}
         if it < self.enable_after:
-            return ret_losses
+            return {}
         
-        for class_name, config in self.class_name_cfgs.items():
+        ret_losses = {}
+        for _, obj_raw_ret in ret['raw_per_obj_model'].items():
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            class_name = obj_raw_ret['class_name']
+            model_id = obj_raw_ret['model_id']
+            model = scene.asset_bank[model_id]
+            if class_name not in self.class_name_cfgs.keys():
+                continue
+            
+            config = deepcopy(self.class_name_cfgs[class_name])
             assert class_name in uniform_samples.keys(), f"uniform_samples should contain {class_name}"
-            config = deepcopy(config)
             w = config.pop('w', None)
             if (anneal_cfg:=config.pop('anneal', None)) is not None:
                 w = get_anneal_val(it=it, **anneal_cfg)

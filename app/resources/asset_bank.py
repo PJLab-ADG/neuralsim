@@ -38,6 +38,12 @@ class AssetBank(nn.ModuleDict):
         # {class_name: [  [model_id, [[scene_id, obj_id], [...]]],   [...]  ]}
         self.class_name_infos: Dict[str, Dict[str, List[Tuple[str, str]]]] = {}
 
+        """ Example on how to use `self.class_name_infos`: 
+        >>> for class_name, model_id_map in self.asset_bank.class_name_infos.items():
+        >>>     for model_id, scene_obj_id_list in model_id_map.items():
+        >>>         pass # Do something
+        """
+
     @property
     def class_name_configs(self) -> Dict[str, ConfigDict]:
         return self.config

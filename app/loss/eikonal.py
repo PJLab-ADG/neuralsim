@@ -5,6 +5,7 @@
 """
 
 import numbers
+from copy import deepcopy
 from typing import Dict, List, Literal, Union
 
 import torch
@@ -110,9 +111,8 @@ class EikonalLoss(nn.Module):
         
         device = obj.device
         class_name = ret['class_name']
-        config = self.class_name_cfgs[class_name].copy()
         
-        config = config.copy()
+        config = deepcopy(self.class_name_cfgs[class_name])
         w = config.pop('w', None)
         if (anneal_cfg:=config.get('anneal', None)) is not None:
             w = get_anneal_val(it=it, **anneal_cfg)
@@ -128,7 +128,7 @@ class EikonalLoss(nn.Module):
             if (self.log_every > 0) and (it % self.log_every == 0) and (logger is not None):
                 logger.add_nested_dict(f'train_step_{mode}.debug', 'uniform.nablas_norm', tensor_statistics(nablas.norm(dim=-1)), it=it)
             
-            loss_on_uniform = self.fn(uniform_samples['nablas'].flatten(0, -2)).mean()
+            loss_on_uniform = self.fn(nablas.flatten(0, -2)).mean()
         else:
             loss_on_uniform = torch.tensor([0.], device=device)
         
@@ -136,6 +136,7 @@ class EikonalLoss(nn.Module):
         #---- Optionally, apply Eikonal loss on samples in the occupancy grids (near surface samples)
         #----------------------------------------
         alpha_occ = self.on_occ_ratio
+        alpha_occ = config.get(f'on_occ_ratio', alpha_occ)
         if (alpha_occ > 0) and (obj.model.accel is not None):
             #---- Collect nablas from occupancy grids
             occ_samples = obj.model.uniform_sample_on_occ(nablas[...,0].numel())
@@ -182,57 +183,65 @@ class EikonalLoss(nn.Module):
         self, 
         scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int, 
         mode: Literal['pixel', 'lidar', 'image_patch'] = ...) -> Dict[str, torch.Tensor]:
-        device = scene.device
-        
-        cls_n_pts = {}
-        cls_losses = {}
         ret_losses = {}
         
-        for obj_id, obj_raw_ret in ret['raw_per_obj'].items():
+        for _, obj_raw_ret in ret['raw_per_obj_model'].items():
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
             class_name = obj_raw_ret['class_name']
-            if class_name in self.class_name_cfgs.keys():
-                if (alpha:=self.class_name_cfgs[class_name].get('alpha_loss_on_render', 0)) > 0:
-                    volume_buffer = obj_raw_ret['volume_buffer']
-                    if 'nablas_norm' not in volume_buffer:
-                        volume_buffer['nablas_norm'] = nablas_norm = volume_buffer['nablas'].norm(dim=-1)
-                    else:
-                        nablas_norm = volume_buffer['nablas_norm']
-                    loss_on_render = alpha * self.fn(nablas_norm)
-                    cls_n_pts.setdefault(class_name, []).append(nablas_norm.numel())
-                    cls_losses.setdefault(class_name, []).append(loss_on_render)
-                else:
-                    assert class_name in uniform_samples, f"uniform_samples should contains {class_name}"
-        
-        for class_name, config in self.class_name_cfgs.items():
-            config = config.copy()
+            model_id = obj_raw_ret['model_id']
+            model = scene.asset_bank[model_id]
+            if class_name not in self.class_name_cfgs.keys():
+                continue
+            
+            config = deepcopy(self.class_name_cfgs[class_name])
             w = config.pop('w', None)
             if (anneal_cfg:=config.get('anneal', None)) is not None:
                 w = get_anneal_val(it=it, **anneal_cfg)
             assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
             
-            if class_name in uniform_samples:
+            #----------------------------------------
+            #---- Apply Eikonal loss on uniform samples in the whole valid space
+            #----------------------------------------
+            if self.on_uniform_samples:
+                assert class_name in uniform_samples.keys(), f"uniform_samples should contain {class_name}"
                 cls_samples = uniform_samples[class_name]
-                if 'nablas_norm' not in cls_samples:
-                    cls_samples['nablas_norm'] = nablas_norm = cls_samples['nablas'].norm(dim=-1)
-                else:
-                    nablas_norm = cls_samples['nablas_norm']
-                loss_on_uniform = self.fn(nablas_norm)
-                cls_n_pts.setdefault(class_name, []).append(nablas_norm.numel())
-                cls_losses.setdefault(class_name, []).append(loss_on_uniform)
+                #---- Collect nablas from uniform_samples
+                assert 'nablas' in cls_samples, f"uniform_samples[{class_name}] should contains nablas"
+                nablas = cls_samples['nablas']
+                loss_on_uniform = self.fn(nablas).mean()
+                ret_losses[f"loss_eikonal.{class_name}.uniform"] = w * loss_on_uniform
+            
+            #----------------------------------------
+            #---- Optionally, apply Eikonal loss on samples in the occupancy grids (near surface samples)
+            #----------------------------------------
+            alpha_occ = self.on_occ_ratio
+            alpha_occ = config.get(f'on_occ_ratio', alpha_occ)
+            if (alpha_occ > 0) and (model.accel is not None):
+                #---- Collect nablas from occupancy grids
+                occ_samples = model.uniform_sample_on_occ(nablas[...,0].numel())
+                nablas = occ_samples['nablas']
+                loss_on_occ = self.fn(nablas).mean()
+                ret_losses[f"loss_eikonal.{class_name}.occ"] = w * alpha_occ * loss_on_occ
 
-            n_pts = cls_n_pts.get(class_name, [])
-            if len(n_pts) > 0:
-                losses = cls_losses[class_name]
-                if len(n_pts) > 1:
-                    if config.get('is_weighted_by_counts', True):
-                        n_pts = torch.tensor(n_pts, dtype=torch.float32, device=device)
-                        weight = n_pts / n_pts.sum()
-                        loss = (torch.stack(losses)*weight).sum()
-                    else:
-                        loss = torch.stack(losses).mean()
+            #----------------------------------------
+            #---- Optionally, apply Eikonal loss on samples of `volume_buffer` when rendering
+            #----------------------------------------
+            alpha_render = self.on_render_ratio
+            alpha_render = config.get(f'on_render_ratio_{mode}', alpha_render)
+            if (alpha_render > 0) and (obj_raw_ret['volume_buffer']['buffer_type'] != 'empty'):
+                volume_buffer = obj_raw_ret['volume_buffer']
+                nablas = volume_buffer['nablas'].flatten(0, -2)
+                
+                if self.on_render_type == 'weighted':
+                    loss_on_render = packed_sum(self.fn(nablas) * volume_buffer['vw_in_total'].data, volume_buffer['pack_infos_collect']).mean()
+                elif self.on_render_type == 'equal':
+                    loss_on_render = self.fn(nablas).mean()
+                elif self.on_render_type == 'both':
+                    loss_on_render = self.fn(nablas).mean() + \
+                        packed_sum(self.fn(nablas) * volume_buffer['vw_in_total'].data, volume_buffer['pack_infos_collect']).mean()
                 else:
-                    loss = losses[0]
-
-                ret_losses[f"loss_eikonal.{class_name}"] = w * loss
+                    raise RuntimeError(f"Invalid on_render_type={self.on_render_type}")
+                ret_losses[f"loss_eikonal.{class_name}.render"] = w * alpha_render * loss_on_render
         
         return ret_losses            

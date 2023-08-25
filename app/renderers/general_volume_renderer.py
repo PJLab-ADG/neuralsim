@@ -147,7 +147,7 @@ class GeneralVolumeRenderer(nn.Module):
         if render_per_obj_in_total:
             rendered_per_obj_in_total = dict()
         
-        raw_ret_all = dict()
+        raw_per_obj_model = dict()
         rendered_objs_group_by_class_name: Dict[str, List[str]] = {}
         rendered_objs_group_by_model_id: Dict[str, List[str]] = {}
         
@@ -165,7 +165,9 @@ class GeneralVolumeRenderer(nn.Module):
             # Early z-test (batched)
             batched_ray_input = dict(
                 rays_o=rays_o_o[group.inds], rays_d=rays_d_o[group.inds], near=near, far=far, 
-                rays_fi=rays_fi, rays_xy=rays_xy, rays_h_appear_embed=h_image_embed)
+                rays_fi=rays_fi.tile(len(group.inds), *[1]*rays_fi.dim()) if rays_fi is not None else None, 
+                rays_xy=rays_xy.tile(len(group.inds), *[1]*rays_xy.dim()) if rays_xy is not None else None, 
+                rays_h_appear_embed=h_image_embed.tile(len(group.inds), *[1]*h_image_embed.dim()) if h_image_embed is not None else None)
             batched_ray_tested = model.batched_ray_test(**batched_ray_input, compact_batch=True)
             
             full_batch_ind_map = batched_ray_tested['full_batch_ind_map'].tolist()
@@ -233,7 +235,9 @@ class GeneralVolumeRenderer(nn.Module):
                         with_rgb=with_rgb, with_normal=with_normal, with_feature_dim=with_feature_dim)
 
             # Gather results
-            raw_ret.update(ray_inds=ray_inds, num_rays=num_rays, class_name=class_name, obj_id=compact_obj_ids)
+            raw_ret.update(
+                class_name=class_name, obj_id=compact_obj_ids, model_id=model.id, 
+                num_rays=num_rays, ray_inds=ray_inds, )
             rendered_objs_group_by_class_name.setdefault(class_name, []).extend(compact_obj_ids)
             rendered_objs_group_by_model_id.setdefault(model.id, []).extend(compact_obj_ids)
             if num_rays > 0:
@@ -279,7 +283,7 @@ class GeneralVolumeRenderer(nn.Module):
                         volume_buffer['nablas_in_world'] = nablas_in_world
 
             # Put everything into overall buffer
-            raw_ret_all[group.ids[0]] = raw_ret
+            raw_per_obj_model[group.ids[0]] = raw_ret
 
         def foreach_query_shared(model: AssetModelMixin, group: namedtuple_ind_id_obj):
             """
@@ -340,7 +344,9 @@ class GeneralVolumeRenderer(nn.Module):
                         with_rgb=with_rgb, with_normal=with_normal, with_feature_dim=with_feature_dim)
                 
                 # Gather results
-                raw_ret.update(ray_inds=ray_inds, num_rays=num_rays, class_name=class_name, obj_id=obj_id)
+                raw_ret.update(
+                    class_name=class_name, obj_id=obj_id, model_id=model.id, 
+                    num_rays=num_rays, ray_inds=ray_inds, )
                 rendered_objs_group_by_class_name.setdefault(class_name, []).append(obj_id)
                 rendered_objs_group_by_model_id.setdefault(model.id, []).append(obj_id)
                 if num_rays > 0:
@@ -365,7 +371,7 @@ class GeneralVolumeRenderer(nn.Module):
                             volume_buffer['nablas_in_world'] = rotate_volume_buffer_nablas(o2w_rot, volume_buffer['nablas'], volume_buffer)
 
                 # Put everything into overall buffer
-                raw_ret_all[obj_id] = raw_ret
+                raw_per_obj_model[obj_id] = raw_ret
         
         def query_single(model: AssetModelMixin, group: namedtuple_ind_id_obj):
             """
@@ -396,7 +402,7 @@ class GeneralVolumeRenderer(nn.Module):
                 
                 if (cr_obj:=model.cr_obj) is not None:
                     # NOTE: If cr_obj is present, distant-view model should use rays in cr_obj
-                    cr_raw_ret = raw_ret_all[cr_obj.id]
+                    cr_raw_ret = raw_per_obj_model[cr_obj.id]
                     cr_ind = drawable_class_name_dict[cr_obj.class_name].inds[0]
                     ray_input.update(rays_o=rays_o_o[cr_ind], rays_d=rays_d_o[cr_ind])
                     # NOTE: For rays that pass cr's ray_test, the distant model's sampling starts from cr's `far`
@@ -450,7 +456,7 @@ class GeneralVolumeRenderer(nn.Module):
             
             # Gather results
             raw_ret.update(
-                class_name=class_name, obj_id=obj_id, 
+                class_name=class_name, obj_id=obj_id, model_id=model.id, 
                 num_rays=num_rays, ray_inds=ray_inds, ray_near=ray_near, ray_far=ray_far)
             rendered_objs_group_by_class_name.setdefault(class_name, []).append(obj_id)
             rendered_objs_group_by_model_id.setdefault(model.id, []).append(obj_id)
@@ -476,7 +482,7 @@ class GeneralVolumeRenderer(nn.Module):
                         volume_buffer['nablas_in_world'] = rotate_volume_buffer_nablas(o2w_rot, volume_buffer['nablas'], volume_buffer)
              
             # Put everything into overall buffer
-            raw_ret_all[obj_id] = raw_ret
+            raw_per_obj_model[obj_id] = raw_ret
             
         #----------------------------------------------------
         #              Ray query each model
@@ -521,7 +527,7 @@ class GeneralVolumeRenderer(nn.Module):
             
             current_pack_indices_buffer = total_pack_infos_sparse[:, 0].clone()
             
-            for raw_ret in raw_ret_all.values():
+            for raw_ret in raw_per_obj_model.values():
                 volume_buffer = raw_ret['volume_buffer']
                 if (buffer_type:=volume_buffer['buffer_type']) != 'empty':
                     ray_inds_hit_collect, pack_infos_collect = volume_buffer['ray_inds_hit_collect'], volume_buffer['pack_infos_collect']
@@ -572,7 +578,7 @@ class GeneralVolumeRenderer(nn.Module):
                 total_rendered['feature_volume'][total_ray_inds_hit] = packed_sum(total_vw.view(-1,1) * total_volume_buffer['feature'].view(-1,3), total_pack_infos)
 
             if return_buffer or render_per_obj_in_total:
-                for raw_ret in raw_ret_all.values():
+                for raw_ret in raw_per_obj_model.values():
                     volume_buffer = raw_ret['volume_buffer']
                     if (buffer_type:=volume_buffer['buffer_type']) != 'empty':
                         volume_buffer['vw_in_total'] = total_vw[volume_buffer['pidx_in_total']]
@@ -633,7 +639,7 @@ class GeneralVolumeRenderer(nn.Module):
             ret['volume_buffer'] = total_volume_buffer
 
         if return_details:
-            ret['raw_per_obj'] = raw_ret_all
+            ret['raw_per_obj_model'] = raw_per_obj_model
 
         return ret
     
@@ -645,7 +651,7 @@ class GeneralVolumeRenderer(nn.Module):
         show_progress: bool=False, rayschunk: int=None, 
         near: float = None, far: float = None, bypass_ray_query_cfg=ConfigDict(), 
         with_rgb: bool=None, with_normal: bool=None, with_feature_dim: int=None, with_env: bool=None, 
-        return_buffer=False, return_details=False, render_per_obj=False
+        return_buffer=False, return_details=False, render_per_obj=False, render_per_obj_in_total=False
         ) -> dict:
 
         assert rays is not None or observer is not None, \
@@ -685,7 +691,7 @@ class GeneralVolumeRenderer(nn.Module):
                 self.__call__,
                 scene=scene, observer=observer, drawables=drawables, near=near, far=far, bypass_ray_query_cfg=bypass_ray_query_cfg, 
                 with_rgb=with_rgb, with_normal=with_normal, with_feature_dim=with_feature_dim, with_env=with_env,
-                return_buffer=return_buffer, return_details=return_details, render_per_obj=render_per_obj
+                return_buffer=return_buffer, return_details=return_details, render_per_obj=render_per_obj, render_per_obj_in_total=render_per_obj_in_total
             )
             
             if self.training or (not rayschunk) or (rays[0].shape[0] <= rayschunk):

@@ -6,7 +6,7 @@
 
 import numbers
 from copy import deepcopy
-from typing import Dict, List, Union
+from typing import Dict, List, Literal, Union
 
 import torch
 import torch.nn as nn
@@ -72,3 +72,34 @@ class ClearanceLoss(nn.Module):
         _, penalty = self.fn_penalty(near_sdf, **config)
         loss = w * penalty
         return {'loss_clearance': loss}
+    
+    def forward_code_multi(
+        self, 
+        scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int, 
+        mode: Literal['pixel', 'lidar', 'image_patch'] = ...) -> Dict[str, torch.Tensor]:
+        
+        ret_losses = {}
+        for _, obj_raw_ret in ret['raw_per_obj_model'].items():
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            class_name = obj_raw_ret['class_name']
+            model_id = obj_raw_ret['model_id']
+            model = scene.asset_bank[model_id]
+            if class_name not in self.class_name_cfgs.keys():
+                continue
+            
+            config = deepcopy(self.class_name_cfgs[class_name])
+            w = config.pop('w', None)
+            if (anneal_cfg:=config.pop('anneal', None)) is not None:
+                w = get_anneal_val(it=it, **anneal_cfg)
+            assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
+            
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue
+            
+            near_sdf = obj_raw_ret['details']['near_sdf']
+            _, penalty = self.fn_penalty(near_sdf, **config)
+            
+            ret_losses[f'loss_clearance.{class_name}'] = w * penalty
+        
+        return ret_losses

@@ -406,7 +406,7 @@ class MonoNormalLoss(nn.Module):
         ret_losses['loss_mono_normal.l1'] = self.w_l1 * loss_l1
         ret_losses['loss_mono_normal.cos'] = self.w_cos * loss_cos
 
-        # for oid, oret in ret['raw_per_obj'].items():
+        # for oid, oret in ret['raw_per_obj_model'].items():
         #     if 'nablas_in_world' not in oret['volume_buffer'].keys():
         #         continue
         #     # o2w = scene.all_nodes[oid].world_transform.detach() # Removing gradients on nablas can eliminate interference with the pose gradient.

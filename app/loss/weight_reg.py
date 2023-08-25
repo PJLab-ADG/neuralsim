@@ -5,6 +5,7 @@
 """
 
 import numbers
+from copy import deepcopy
 from typing import Dict, List, Union
 
 import torch
@@ -42,34 +43,27 @@ class WeightRegLoss(nn.Module):
                     class_name_cfgs[k] = {'w' : v}
         self.class_name_cfgs: Dict[str, ConfigDict] = class_name_cfgs
     
-    # def forward_code_single(self, obj: SceneNode, ret: dict, sample: dict, ground_truth: dict, it: int):
-    #     model = obj.model
-    #     class_name = obj.class_name
-    #     config = self.class_name_cfgs[class_name].copy()
-        
-    #     w = config.pop('w', None)
-    #     if (anneal_cfg:=config.get('anneal', None)) is not None:
-    #         w = get_anneal_val(it=it, **anneal_cfg)
-    #     assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
-    #     assert hasattr(model, 'get_weight_reg'), f"{obj.model.id} has no get_weight_reg"
-    #     loss = w * model.get_weight_reg(**config).sum()
-    #     return {'loss_weight_reg': loss}
-    
     def forward(
         self, scene: Scene, ret: dict, sample: dict, ground_truth: dict, it: int
         ) -> Dict[str, torch.Tensor]:
         ret_losses = {}
-        for class_name, config in self.class_name_cfgs.items():
-            config = config.copy()
+        
+        for _, obj_raw_ret in ret['raw_per_obj_model'].items():
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            class_name = obj_raw_ret['class_name']
+            model_id = obj_raw_ret['model_id']
+            model = scene.asset_bank[model_id]
+            if class_name not in self.class_name_cfgs.keys():
+                continue
+            
+            config = deepcopy(self.class_name_cfgs[class_name])
             w = config.pop('w', None)
             if (anneal_cfg:=config.pop('anneal', None)) is not None:
                 w = get_anneal_val(it=it, **anneal_cfg)
             assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
 
-            obj = scene.get_drawable_groups_by_class_name(class_name)[0]
-            model = obj.model
-            assert hasattr(model, 'get_weight_reg'), f"{obj.model.id} has no get_weight_reg"
-            
-            loss = w * model.get_weight_reg(**config).sum()
-            ret_losses[f"loss_weight_reg.{class_name}"] = loss
+            assert hasattr(model, 'get_weight_reg'), f"{model_id} has no get_weight_reg"
+            loss = model.get_weight_reg(**config).sum()
+            ret_losses[f"loss_weight_reg.{class_name}"] = w * loss
         return ret_losses

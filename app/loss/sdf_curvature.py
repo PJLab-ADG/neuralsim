@@ -8,6 +8,7 @@
 """
 
 import numbers
+from copy import deepcopy
 from typing import Dict, List, Union
 
 import torch
@@ -44,7 +45,7 @@ class SDFCurvatureRegLoss(nn.Module):
         device = obj.device
         model = obj.model
         class_name = ret['class_name']
-        config = self.class_name_cfgs[class_name].copy()
+        config = deepcopy(self.class_name_cfgs[class_name])
         
         w = config.pop('w', None)
         if (anneal_cfg:=config.get('anneal', None)) is not None:
@@ -75,26 +76,3 @@ class SDFCurvatureRegLoss(nn.Module):
     
     def forward_code_multi(self, scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
-        if it < self.enable_after:
-            return {}
-        ret_losses = {}
-        for class_name, config in self.class_name_cfgs.items():
-            obj = scene.get_drawable_groups_by_class_name(class_name)[0]
-            device = obj.device
-            model = obj.model
-            assert hasattr(model, 'get_sdf_curvature_1d'), f"{obj.model.id} has no get_sdf_curvature_1d"
-            
-            config = config.copy()
-            w = config.pop('w', None)
-            if (anneal_cfg:=config.get('anneal', None)) is not None:
-                w = get_anneal_val(it=it, **anneal_cfg)
-            assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
-            
-            if (alpha:=config.get('alpha_loss_on_render', 0)) > 0:
-                volume_buffer = ret['volume_buffer']
-                if volume_buffer['buffer_type'] != 'empty':
-                    loss_on_render = alpha * self.fn(model.get_sdf_curvature_1d(volume_buffer['net_x'], volume_buffer['nablas'], eps=self.eps))
-                else:
-                    loss_on_render = torch.tensor([0.], device=device)
-            else:
-                loss_on_render = torch.tensor([0.], device=device)

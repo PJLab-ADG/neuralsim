@@ -8,6 +8,7 @@
 """
 
 import numbers
+from copy import deepcopy
 from typing import Dict, List, Union
 
 import torch
@@ -15,6 +16,7 @@ import torch.nn as nn
 
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.loss.recon import *
+from nr3d_lib.models.annealers import get_anneal_val
 
 from app.resources import Scene, SceneNode
 
@@ -41,7 +43,7 @@ class ColorLipshitzRegLoss(nn.Module):
             return {}
         model = obj.model
         class_name = obj.class_name
-        config = self.class_name_cfgs[class_name]
+        config = deepcopy(self.class_name_cfgs[class_name])
         
         assert hasattr(model, 'get_color_lipshitz_bound'), f"{obj.model.id} has no get_color_lipshitz_bound"
         loss = config.w * model.get_color_lipshitz_bound()
@@ -51,11 +53,22 @@ class ColorLipshitzRegLoss(nn.Module):
         if it < self.enable_after:
             return {}
         ret_losses = {}
-        for class_name, config in self.class_name_cfgs.items():
-            obj = scene.get_drawable_groups_by_class_name(class_name)[0]
-            model = obj.model
+        for _, obj_raw_ret in ret['raw_per_obj_model'].items():
+            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            class_name = obj_raw_ret['class_name']
+            model_id = obj_raw_ret['model_id']
+            model = scene.asset_bank[model_id]
+            if class_name not in self.class_name_cfgs.keys():
+                continue
             
-            assert hasattr(model, 'get_color_lipshitz_bound'), f"{obj.model.id} has no get_color_lipshitz_bound"
+            config = deepcopy(self.class_name_cfgs[class_name])
+            w = config.pop('w', None)
+            if (anneal_cfg:=config.get('anneal', None)) is not None:
+                w = get_anneal_val(it=it, **anneal_cfg)
+            assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
+            
+            assert hasattr(model, 'get_color_lipshitz_bound'), f"{model.id} has no get_color_lipshitz_bound"
             loss = config.w * model.get_color_lipshitz_bound()
             ret_losses[f"loss_color_reg.{class_name}"] = loss
         return ret_losses

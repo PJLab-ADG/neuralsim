@@ -147,7 +147,7 @@ class SingleVolumeRenderer(nn.Module):
         #                 Prepare outputs
         #----------------------------------------------------
         total_num_rays = rays_o.shape[0]
-        raw_per_obj = dict()
+        raw_per_obj_model = dict()
         total_num_samples_per_ray = torch.zeros(total_num_rays, dtype=torch.long, device=device)
         total_rendered = self._prep_empty_rendered(
             [total_num_rays], device=device, 
@@ -193,7 +193,7 @@ class SingleVolumeRenderer(nn.Module):
                 cr_ret = cr_model.ray_query(
                     ray_input=cr_ray_input, ray_tested=cr_ray_tested, config=ray_query_config, 
                     return_buffer=True, return_details=return_details, render_per_obj=render_per_obj)
-                cr_ret['class_name'] = cr_obj.class_name
+                cr_ret.update(class_name=cr_obj.class_name, model_id=cr_model.id)
                 # Collect per obj rendering
                 if render_per_obj:
                     cr_rendered = rendered_per_obj[cr_obj.id] = cr_ret.pop('rendered')
@@ -213,7 +213,7 @@ class SingleVolumeRenderer(nn.Module):
                     if 'nablas' in cr_volume_buffer:
                         o2w_rot = cr_obj.world_transform.rotation().detach() # Removing gradients on nablas can eliminate interference with the pose gradient.
                         cr_volume_buffer['nablas_in_world'] = rotate_volume_buffer_nablas(o2w_rot, cr_volume_buffer['nablas'], cr_volume_buffer)
-                raw_per_obj[cr_obj.id] = cr_ret
+                raw_per_obj_model[cr_obj.id] = cr_ret
 
         #----------------------------------------------------
         #               Query background model
@@ -250,10 +250,10 @@ class SingleVolumeRenderer(nn.Module):
                 ray_query_config.update(with_rgb=with_rgb, with_normal=with_normal, with_feature_dim=with_feature_dim) # Possible override
                 for key, value in bypass_ray_query_cfg.get(dv_obj.class_name, {}).items():
                     ray_query_config[key] = value
-                dv_ret = dv_model.ray_query(
+                dv_ret: dict = dv_model.ray_query(
                     ray_input=dv_ray_input, ray_tested=dv_ray_tested, config=ray_query_config, 
                     return_buffer=True, return_details=return_details, render_per_obj=render_per_obj)
-                dv_ret['class_name'] = dv_obj.class_name
+                dv_ret.update(class_name=dv_obj.class_name, model_id=dv_model.id)
                 if render_per_obj:
                     dv_rendered = rendered_per_obj[dv_obj.id] = dv_ret.pop('rendered')
                     # Rotate obj's normals to world
@@ -272,7 +272,7 @@ class SingleVolumeRenderer(nn.Module):
                     if 'nablas' in dv_volume_buffer:
                         o2w_rot = dv_obj.world_transform.rotation().detach() # Removing gradients on nablas can eliminate interference with the pose gradient.
                         dv_volume_buffer['nablas_in_world'] = rotate_volume_buffer_nablas(o2w_rot, dv_volume_buffer['nablas'], dv_volume_buffer)
-                raw_per_obj[dv_obj.id] = dv_ret
+                raw_per_obj_model[dv_obj.id] = dv_ret
 
         #----------------------------------------------------
         #            Make total voloume buffer
@@ -386,7 +386,7 @@ class SingleVolumeRenderer(nn.Module):
             ret['volume_buffer'] = total_volume_buffer
         
         if return_details:
-            ret['raw_per_obj'] = raw_per_obj
+            ret['raw_per_obj_model'] = raw_per_obj_model
 
         if render_per_obj:
             ret["rendered_per_obj"] = rendered_per_obj

@@ -31,6 +31,12 @@ This repository primarily addresses two topics:
 
 Single-object / multi-object / indoor / outdoor / large-scale surface reconstruction and multi-modal sensor simulation
 
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/ce6ec6fc-2d0e-4c2b-9d91-d1b992d13ff4
+
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/32d6fe6f-39a1-403d-8b12-16d26e092375
+
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0bc307d339f3
+
 |                                                              |                                                              |
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
 | :rocket: Object **surface reconstruction** in minutes !<br />Input: posed images <u>without mask</u><br />Get started: [neus_in_minutes](docs/methods/neus_in_minutes.md)<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/618ff7ab-d769-47c4-9c26-bc54674e0cb2" alt="teaser_training_bmvs_gundam" width="320"> | :rocket:  Outdoor **surface reconstruction** in minutes !<br />Input: posed images <u>without mask</u><br />Get started: [neus_in_minutes](docs/methods/neus_in_minutes.md)<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c216407-0c60-47ae-b1c1-f3ba66c67cc2" alt="teaser_training_bmvs_village_house" width="320"> |

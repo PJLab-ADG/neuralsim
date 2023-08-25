@@ -15,6 +15,15 @@ An **unofficial** and improved implementation of "NeuS: Learning Neural Implicit
 }
 ```
 
+## [NVS Demo] Rendered & Depth & Surface normals
+
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/ce6ec6fc-2d0e-4c2b-9d91-d1b992d13ff4
+
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/32d6fe6f-39a1-403d-8b12-16d26e092375
+
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0bc307d339f3
+
+
 ## Highlights (demo coming soon!)
 
 - Stable training within 10 minutes without necessarily needing mask

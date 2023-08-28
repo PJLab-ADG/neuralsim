@@ -21,12 +21,12 @@ import torch
 import torch.nn as nn
 import torch.utils.data as torch_data
 from torch.utils.data.dataloader import DataLoader
-from torch.utils.data.sampler import WeightedRandomSampler
 
 from nr3d_lib.utils import collate_tuple_of_nested_dict
 from nr3d_lib.models.importance import ImpSampler
 
-from .base import SceneDataLoader, FrameRandomSampler
+from .base import SceneDataLoader
+from .sampler import get_scene_sampler, get_frame_sampler
 
 class PixelDatasetBase(torch_data.Dataset):
     def __init__(
@@ -100,13 +100,13 @@ class PixelDataset(PixelDatasetBase):
         camera_sample_mode: Literal['uniform', 'weighted', 'all_list', 'all_stack']='uniform', 
         multi_cam_weight: List[float]=None, 
         frame_sample_mode: Literal['uniform', 'weighted_by_speed', 'error_map']='uniform', 
-        sample_frame_multi_scene_balance=True, sample_frame_replacement=True, 
         # Basic
         error_map_res: Tuple[int,int] = (128,128), 
         uniform_sampling_fraction: float = 0.5, 
         respect_errormap_after: int = 0, # Default to 0: always respect errormap
         equal_mode: Literal['ray_batch', 'point_batch'] = 'ray_batch', 
         num_rays: int = 4096, num_points: int = None, 
+        ddp=False, **sampler_kwargs
         ) -> None:
         """ 
         Pixel sampler: in one sampled batch, rays originate from the same frame of the same observer.
@@ -131,10 +131,6 @@ class PixelDataset(PixelDatasetBase):
                 - `uniform`: Each frame has an equal probability of being chosen.
                 - `weighted_by_speed`: Probability of a frame being chosen is based on motion speed.
                 Defaults to 'uniform'.
-            sample_frame_multi_scene_balance (bool, optional): If true, the weights of different scenes will be balanced \
-                according to the number of frames in each scene when sampling frames from different scenes. Defaults to True.
-                Only meaningful when sampling from multiple scenes.
-            sample_frame_replacement (bool, optional): If true, frames will be replaced after sampling. Defaults to True.
             error_map_res (Tuple[int,int], optional): The resolution of the error map for each frame of each camera. Defaults to (128,128).
             uniform_sampling_fraction (float, optional): The proportion of uniform sampling when using error maps for importance sampling. Defaults to 0.5.
             respect_errormap_after (int, optional): The error map will be respected after this iteration. Defaults to 0.
@@ -165,10 +161,10 @@ class PixelDataset(PixelDatasetBase):
         self.frame_sample_mode = frame_sample_mode
         self.pixel_sample_mode = pixel_sample_mode
         
-        self.sampler = FrameRandomSampler(
-            self.dataset, 
-            multi_scene_balance=sample_frame_multi_scene_balance, replacement=sample_frame_replacement, 
-            frame_sample_mode=self.frame_sample_mode, imp_samplers=self.imp_samplers)
+        self.ddp = ddp
+        self.sampler = get_frame_sampler(
+            self.dataset, frame_sample_mode=self.frame_sample_mode,
+            imp_samplers=self.imp_samplers, ddp=ddp, **sampler_kwargs)
         
     def sample(self, scene_id: str, cam_id: str, frame_id: int, *, num_rays: int = None):
         if num_rays is None: num_rays = self.num_rays
@@ -203,19 +199,12 @@ class PixelDataset(PixelDatasetBase):
         else:
             return random.choice(self.dataset.cam_id_list)
 
-    def get_index(self, index: int):
-        # From holistic index to scene_idx and frame_idx
-        scene_idx = 0
-        while index >= 0:
-            index -= len(self.dataset.scene_bank[scene_idx])
-            scene_idx += 1
-        return (scene_idx - 1), int(index + len(self.dataset.scene_bank[scene_idx - 1]))
-
     def __len__(self):
-        return sum([len(scene) for scene in self.dataset.scene_bank]) # Total number of frames of all scenes
+        # Total number of frames of all scenes
+        return sum([len(scene) for scene in self.dataset.scene_bank])
 
     def __getitem__(self, index: int) -> Tuple[dict, dict]:
-        scene_idx, frame_id = self.get_index(index)
+        scene_idx, frame_id = self.dataset.get_scene_frame_idx(index)
         scene_id = self.scene_id_list[scene_idx]
         if 'all' in self.camera_sample_mode:
             cam_id_list = self.dataset.cam_id_list
@@ -227,13 +216,10 @@ class PixelDataset(PixelDatasetBase):
             ret = self.sample(scene_id, cam_id, frame_id)
         return ret
 
-    def get_random_sampler(self, ddp=False):
-        if ddp:
-            raise NotImplementedError
-        return self.sampler
-
-    def get_dataloader(self, ddp=False):
-        return DataLoader(self, sampler=self.get_random_sampler(ddp=ddp), collate_fn=collate_tuple_of_nested_dict, num_workers=0)
+    def get_dataloader(self, num_workers: int=0):
+        return DataLoader(
+            self, sampler=self.sampler, collate_fn=collate_tuple_of_nested_dict, 
+            num_workers=0 if (self.dataset.preload or not self.ddp) else num_workers)
 
 class JointFramePixelDataset(PixelDatasetBase):
     def __init__(
@@ -247,6 +233,7 @@ class JointFramePixelDataset(PixelDatasetBase):
         respect_errormap_after: int = 0,  # Default to 0: always respect errormap
         equal_mode: Literal['ray_batch', 'point_batch'] = 'ray_batch', 
         num_rays: int = 4096, num_points: int = None,
+        ddp=False, **sampler_kwargs
         ) -> None:
         """
         Joint frame & pixel sampler: in one sampled batch, rays could originate from different frames of image, \
@@ -284,6 +271,9 @@ class JointFramePixelDataset(PixelDatasetBase):
             assert multi_cam_weight is not None, f"Please specify `multi_cam_weight`"
             multi_cam_weight = np.array(multi_cam_weight)
             self.multi_cam_weight = multi_cam_weight / multi_cam_weight.sum()
+        
+        self.ddp = ddp
+        self.sampler = get_scene_sampler(self.dataset, ddp=ddp, **sampler_kwargs)
         
     def sample(self, scene_id: str, cam_id: str, *, num_rays: int = None):
         if num_rays is None: num_rays = self.num_rays
@@ -328,23 +318,15 @@ class JointFramePixelDataset(PixelDatasetBase):
             return np.random.choice(self.dataset.cam_id_list, p=self.multi_cam_weight)
 
     def __len__(self):
-        return len(self.dataset.scene_bank) # Total number of scenes.
+        # Total number of scenes. (Since this is a scene-wise dataset)
+        return len(self.dataset.scene_bank)
     
     def __getitem__(self, index: int) -> Tuple[dict, dict]:
         scene_id = self.scene_id_list[index]
         cam_id = self.sample_cam_id()
         return self.sample(scene_id, cam_id)
 
-    def get_random_sampler(self, multi_scene_balance=True, replacement=True):
-        scene_bank = self.dataset.scene_bank
-        scene_lengths = [len(scene) for scene in scene_bank]
-        num_scenes = len(scene_bank)
-        if multi_scene_balance:
-            scene_weights = torch.tensor(scene_lengths, device=self.device, dtype=torch.float)
-            scene_weights = scene_weights / scene_weights.sum()
-        else:
-            scene_weights = torch.full([num_scenes, ],  1./num_scenes, device=self.device, dtype=torch.float)
-        return WeightedRandomSampler(scene_weights, num_scenes, replacement=replacement)
-
-    def get_dataloader(self, ddp=False):
-        return DataLoader(self, sampler=self.get_random_sampler(), collate_fn=collate_tuple_of_nested_dict, num_workers=0)
+    def get_dataloader(self, num_workers: int=0):
+        return DataLoader(
+            self, sampler=self.sampler, collate_fn=collate_tuple_of_nested_dict, 
+            num_workers=0 if (self.dataset.preload or not self.ddp) else num_workers)

@@ -22,8 +22,6 @@ from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.attributes import TransformMat3x4, Scale
 from nr3d_lib.utils import IDListedDict, collate_nested_dict, img_to_torch_and_downscale, pad_images_to_same_size
 
-from nr3d_lib.models.importance import ImpSampler
-
 from app.resources import Scene
 from app.resources.observers import MultiCamBundle, MultiRaysLidarBundle
 
@@ -45,10 +43,13 @@ class SceneDataLoader(object):
         scene_or_scene_bank: Union[IDListedDict[Scene], Scene], 
         dataset_impl: DatasetIO, *, 
         config: ConfigDict, 
-        device=torch.device('cuda:0')) -> None:
+        device=torch.device('cuda:0'), 
+        is_master=True # Mainly for logging controlling
+        ) -> None:
         super().__init__()
 
         self.device = device
+        self.is_master = is_master
         self.config: ConfigDict = config.deepcopy()
         
         if isinstance(scene_or_scene_bank, Scene):
@@ -84,6 +85,14 @@ class SceneDataLoader(object):
         if self.preload:
             self._build_cache(cache_device)
 
+    def get_scene_frame_idx(self, index: int):
+        # From overall index to scene_idx and frame_idx
+        scene_idx = 0
+        while index >= 0:
+            index -= len(self.scene_bank[scene_idx])
+            scene_idx += 1
+        return (scene_idx - 1), int(index + len(self.scene_bank[scene_idx - 1]))
+
     def _build_cache(self, cache_device):
         log.info(f"=> Caching data to device={cache_device}...")
         
@@ -93,7 +102,7 @@ class SceneDataLoader(object):
             if 'camera' in self.config.tags:
                 self._cache_rgbs[scene_id] = {}
                 log.info("=> Caching camera data...")
-                for cam_id in tqdm(self.cam_id_list, "Caching cameras..."):
+                for cam_id in tqdm(self.cam_id_list, "Caching cameras...", disable=not self.is_master):
                     obs = scene.observers[cam_id]
                     if self.config.tags.camera.get('load_images', True):
                         rgb_gts = {}
@@ -193,7 +202,7 @@ class SceneDataLoader(object):
                 
                 if multi_lidar_merge:
                     self._cache_merged_lidars[scene_id] = []
-                    for frame_ind in tqdm(range(len(scene)), "Caching merged LiDAR frames..."):
+                    for frame_ind in tqdm(range(len(scene)), "Caching merged LiDAR frames...", disable=not self.is_master):
                         _ret = self._get_merged_lidar_gts(scene_id=scene_id, frame_ind=frame_ind, device=cache_device)
                         if filter_when_preload: # Calculates on cuda device 
                             _ret = {k: v.to(scene.device) for k, v in _ret.items()}
@@ -203,7 +212,7 @@ class SceneDataLoader(object):
                         self._cache_merged_lidars[scene_id].append(_ret)
                 else: # not multi_lidar_merge
                     self._cache_lidars[scene_id] = {}
-                    for lidar_id in tqdm(self.lidar_id_list, "Caching LiDARs..."):
+                    for lidar_id in tqdm(self.lidar_id_list, "Caching LiDARs...", disable=not self.is_master):
                         lidar_gts = {}
                         for frame_ind in range(len(scene)):
                             _ret = self._get_lidar_gts(scene_id=scene_id, lidar_id=lidar_id, frame_ind=frame_ind, device=cache_device)
@@ -689,95 +698,3 @@ class SceneDataLoader(object):
             lidar_data = self._check_and_filter_lidar_gts(scene_id, self.lidar_id_list, frame_ind, lidar_data, inplace=False)
         return lidar_data
 
-class FrameRandomSampler(torch_data.Sampler):
-    def __init__(
-        self, dataset: SceneDataLoader, *, 
-        multi_scene_balance = True, replacement: bool = True, 
-        frame_sample_mode: Literal['uniform', 'weighted_by_speed', 'error_map'] = 'uniform', 
-        imp_samplers: Dict[str, Dict[str,ImpSampler]]=None) -> None:
-        
-        self.dataset = dataset
-        self.frame_sample_mode = frame_sample_mode
-        self.replacement = replacement
-        self.multi_scene_balance = multi_scene_balance
-
-        scene_bank = self.dataset.scene_bank
-        scene_lengths = [len(scene) for scene in scene_bank]
-        self.num_samples = sum(scene_lengths)
-        
-        if self.multi_scene_balance:
-            scene_weights = torch.tensor(scene_lengths, device=self.device, dtype=torch.float)
-            self.scene_weights = scene_weights / scene_weights.sum()
-        else:
-            self.scene_weights = torch.full([len(scene_bank), ],  1./len(scene_bank), device=self.device, dtype=torch.float)
-
-        if self.frame_sample_mode == 'uniform':
-            self.weights = self._get_weights_uniform()
-        elif self.frame_sample_mode == 'weighted_by_speed':
-            self.weights = self._get_weights_by_speed()
-        elif self.frame_sample_mode == 'error_map':
-            assert imp_samplers is not None, f"Please provide `imp_samplers` for frame_sample_mode={self.frame_sample_mode}"
-            self.imp_samplers = imp_samplers
-            self.weights: torch.Tensor = self._get_weights_from_error_map()
-        else:
-            raise RuntimeError(f"Invalid frame_sample_mode={self.frame_sample_mode}")
-
-    def __len__(self):
-        return self.num_samples
-
-    def __iter__(self) -> Iterator[int]:
-        rand_tensor = torch.multinomial(self.weights, self.num_samples, self.replacement, generator=None)
-        yield from iter(rand_tensor.tolist())
-
-    @property
-    def device(self):
-        return self.dataset.device
-
-    @torch.no_grad()
-    def _get_weights_uniform(self):
-        total_weights = []
-        for i, scene in enumerate(iter(self.dataset.scene_bank)):
-            weights = torch.full([len(scene),], 1./len(scene), device=self.device, dtype=torch.float)
-            total_weights.append( weights * self.scene_weights[i] )
-        total_weights = torch.cat(total_weights)
-        return total_weights
-
-    @torch.no_grad()
-    def _get_weights_by_speed(self, mode: Literal['linear', 'trunc_linear'] = 'linear', multiplier: float=4.0):
-        total_weights = []
-        for i, scene in enumerate(iter(self.dataset.scene_bank)):
-            tracks = scene.process_observer_infos().tracks
-            dtrans = tracks.new_zeros([*tracks.shape[:-1]])
-            dtrans[...,:-1] = (tracks[...,1:,:] - tracks[...,:-1,:]).norm(dim=-1)
-            dtrans[...,-1] = dtrans[...,-2]
-            
-            if mode == 'linear':
-                weights = dtrans.clamp(1e-5)
-                weights /= weights.sum()
-            elif mode == 'trunc_linear':
-                w_mean = gmean(dtrans, dim=-1)
-                weights = dtrans.clip(w_mean/np.sqrt(multiplier), w_mean*np.sqrt(multiplier))
-                weights /= weights.sum()
-            else:
-                raise RuntimeError(f"Invalid mode={mode}")
-            
-            total_weights.append(weights * self.scene_weights[i])
-        total_weights = torch.cat(total_weights)
-        return total_weights
-    
-    @torch.no_grad()
-    def _get_weights_from_error_map(self):
-        total_weights = []
-        for i, (scene_id, scene) in enumerate(self.dataset.scene_bank.items()):
-            weights = torch.zeros([len(scene)], device=self.device, dtype=torch.float)
-            for cam_id, imp_sampler in self.imp_samplers[scene_id].items():
-                weights += imp_sampler.get_pdf_image()
-            weights /= weights.sum()
-            total_weights.append(weights * self.scene_weights[i])
-        total_weights = torch.cat(total_weights)
-        return total_weights
-
-    @torch.no_grad()
-    def update_weights(self):
-        if self.frame_sample_mode == 'error_map':
-            self.weights = self._get_weights_from_error_map()

@@ -149,9 +149,10 @@ if __name__ == "__main__":
             
             normalization, new_c2ws = normalize_multi_view(
                 c2ws, intrs, H, W, 
-                normalize_scale=True, 
+                estimate_focus_center='solve', 
+                normalize_scale='average', 
                 normalize_rotation=True, 
-                estimate_focus_center=True)
+            )
 
             # from nr3d_lib.plot.plot_3d import vis_camera_o3d_from_arrays
             # vis_camera_o3d_from_arrays(intrs, new_c2ws, H, W, cam_size=0.1)

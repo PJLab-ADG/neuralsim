@@ -19,7 +19,8 @@ from torch.utils.data.dataloader import DataLoader
 
 from nr3d_lib.utils import collate_tuple_of_nested_dict
 
-from .base import SceneDataLoader, FrameRandomSampler
+from .base import SceneDataLoader
+from .sampler import get_frame_sampler
 
 class LidarDataset(torch_data.Dataset):
     def __init__(
@@ -29,6 +30,7 @@ class LidarDataset(torch_data.Dataset):
         lidar_sample_mode: Literal['single_uniform', 'single_weighted', 'merged_random', 'merged_uniform', 'merged_weighted'] = 'merged_uniform', 
         multi_lidar_weight: List[float]=None, 
         frame_sample_mode: Literal['uniform', 'weighted_by_speed']='uniform', 
+        ddp=False, **sampler_kwargs
         ) -> None:
         """ Sampler and data loader for LiDAR beams 
 
@@ -75,6 +77,9 @@ class LidarDataset(torch_data.Dataset):
         self.frame_sample_mode = frame_sample_mode
 
         self.cur_it: int = np.inf
+
+        self.ddp = ddp
+        self.sampler = get_frame_sampler(self.dataset, frame_sample_mode=self.frame_sample_mode, ddp=ddp, **sampler_kwargs)
 
     @property
     def device(self):
@@ -167,19 +172,12 @@ class LidarDataset(torch_data.Dataset):
         else:
             return random.choice(self.dataset.lidar_id_list)
 
-    def get_index(self, index: int):
-        # From holistic index to scene_idx and frame_idx
-        scene_idx = 0
-        while index >= 0:
-            index -= len(self.dataset.scene_bank[scene_idx])
-            scene_idx += 1
-        return (scene_idx - 1), int(index + len(self.dataset.scene_bank[scene_idx - 1]))
-
     def __len__(self):
-        return sum([len(scene) for scene in self.dataset.scene_bank]) # Total number of frames of all scenes
+        # Total number of frames of all scenes
+        return sum([len(scene) for scene in self.dataset.scene_bank]) 
 
     def __getitem__(self, index: int) -> Tuple[dict, dict]:
-        scene_idx, frame_id = self.get_index(index)
+        scene_idx, frame_id = self.dataset.get_scene_frame_idx(index)
         scene_id = self.scene_id_list[scene_idx]
         if 'merged' in self.lidar_sample_mode:
             ret = self.sample_merged(scene_id, frame_id)
@@ -190,10 +188,7 @@ class LidarDataset(torch_data.Dataset):
             raise RuntimeError(f"Invalid lidar_sample_mode={self.lidar_sample_mode}")
         return ret
 
-    def get_random_sampler(self, multi_scene_balance=True, replacement=True):
-        return FrameRandomSampler(
-            self.dataset, 
-            multi_scene_balance=multi_scene_balance, replacement=replacement, frame_sample_mode=self.frame_sample_mode)
-
-    def get_dataloader(self, ddp=False):
-        return DataLoader(self, sampler=self.get_random_sampler(), collate_fn=collate_tuple_of_nested_dict, num_workers=0)
+    def get_dataloader(self, num_workers: int=0):
+        return DataLoader(
+            self, sampler=self.sampler, collate_fn=collate_tuple_of_nested_dict, 
+            num_workers=0 if (self.dataset.preload or not self.ddp) else num_workers)

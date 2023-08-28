@@ -936,9 +936,12 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     asset_bank.create_asset_bank(scene_bank, optim_cfg=args.training.optim, device=device)
     asset_bank.to(device)
-    log.info(asset_bank)
-    with open(os.path.join(exp_dir, 'model.txt'), 'w') as f:
-        f.write(repr(asset_bank))
+    # log.info(asset_bank)
+    if is_master():
+        model_txt = os.path.join(exp_dir, 'model.txt')
+        with open(model_txt, 'w') as f:
+            f.write(repr(asset_bank))
+        log.info(f"=> Model structure saved to {model_txt}")
 
     #---------------------------------------------
     #---     Load assets to scene objects     ----
@@ -956,50 +959,54 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     #-------------     Dataset     ---------------
     #---------------------------------------------
-    log.info(f"=> Start loading data, for experiment: {exp_dir}")
-    scene_dataloader_train = SceneDataLoader(scene_bank, dataset_impl, config=args.training.dataloader, device=device)
-    scene_dataloader_val = SceneDataLoader(scene_bank, dataset_impl, config=args.training.val_dataloader, device=device)
+    log.info(f"=> Start loading data, for exp: {exp_dir}")
+    scene_dataloader_train = SceneDataLoader(scene_bank, dataset_impl, config=args.training.dataloader, device=device, is_master=is_master())
+    scene_dataloader_val = SceneDataLoader(scene_bank, dataset_impl, config=args.training.val_dataloader, device=device, is_master=is_master())
     log.info(f"=> Done loading data.")
     
-    if args.ddp:
-        raise NotImplementedError("jianfei: Do not need DDP.")
+    def cycle(dataloader):
+        epoch_idx = 0
+        while True:
+            for (s,g) in dataloader:
+                yield s, g
+            epoch_idx += 1
+            if args.ddp:
+                dataloader.dataset.sampler.set_epoch(epoch_idx)
+    
+    sampler_kwargs = {'scene_sample_mode': 'weighted_by_len', 
+                     'ddp': args.ddp, 'seed': seed, 'drop_last': False}
+    if params:=args.training.dataloader.get('pixel_dataset', None):
+        params = params.copy()
+        joint = params.pop('joint', False)
+        if not joint:
+            pixel_dataset = PixelDataset(scene_dataloader_train, **params, **sampler_kwargs)
+        else:
+            pixel_dataset = JointFramePixelDataset(scene_dataloader_train, **params, **sampler_kwargs)
+        pixel_dataloader_cyc = cycle(pixel_dataset.get_dataloader())
     else:
-        def cycle(dataloader):
-            while True:
-                for (s,g) in dataloader:
-                    yield s, g
-        
-        if params:=args.training.dataloader.get('pixel_dataset', None):
-            params = params.copy()
-            if params.pop('joint', False):
-                pixel_dataset = JointFramePixelDataset(scene_dataloader_train, **params)
-            else:
-                pixel_dataset = PixelDataset(scene_dataloader_train, **params)
-            pixel_dataloader_cyc = cycle(pixel_dataset.get_dataloader())
-        else:
-            pixel_dataset = None
-            pixel_dataloader_cyc = None
-        
-        if params:=args.training.dataloader.get('lidar_dataset', None):
-            lidar_dataset = LidarDataset(scene_dataloader_train, **params)
-            lidar_dataloader_cyc = cycle(lidar_dataset.get_dataloader())
-        else:
-            lidar_dataset = None
-            lidar_dataloader_cyc = None
-            
-        if params:=args.training.dataloader.get('image_patch_dataset', None):
-            image_patch_dataset = ImagePatchDataset(scene_dataloader_train, **params)
-            image_patch_dataloader_cyc = cycle(image_patch_dataset.get_dataloader())
-        else:
-            image_patch_dataset = None
-            image_patch_dataloader_cyc = None
-        
-        # if params:=args.training.val_dataloader.get('lidar_dataset', None):
-        #     lidar_val_dataset = LidarDataset(scene_dataloader_val, **params)
-        #     lidar_val_dataloader_cyc = cycle(lidar_val_dataset.get_dataloader())
-        if params:=args.training.val_dataloader.get('image_dataset', None):
-            image_val_dataset = ImageDataset(scene_dataloader_val, **params)
-            image_val_dataloader_cyc = cycle(image_val_dataset.get_dataloader())
+        pixel_dataset = None
+        pixel_dataloader_cyc = None
+    
+    if params:=args.training.dataloader.get('lidar_dataset', None):
+        lidar_dataset = LidarDataset(scene_dataloader_train, **params, **sampler_kwargs)
+        lidar_dataloader_cyc = cycle(lidar_dataset.get_dataloader())
+    else:
+        lidar_dataset = None
+        lidar_dataloader_cyc = None
+    
+    if params:=args.training.dataloader.get('image_patch_dataset', None):
+        image_patch_dataset = ImagePatchDataset(scene_dataloader_train, **params, **sampler_kwargs)
+        image_patch_dataloader_cyc = cycle(image_patch_dataset.get_dataloader())
+    else:
+        image_patch_dataset = None
+        image_patch_dataloader_cyc = None
+    
+    # if params:=args.training.val_dataloader.get('lidar_dataset', None):
+    #     lidar_val_dataset = LidarDataset(scene_dataloader_val, **params)
+    #     lidar_val_dataloader_cyc = cycle(lidar_val_dataset.get_dataloader())
+    if params:=args.training.val_dataloader.get('image_dataset', None):
+        image_val_dataset = ImageDataset(scene_dataloader_val, **params, **sampler_kwargs)
+        image_val_dataloader_cyc = cycle(image_val_dataset.get_dataloader())
     
     #---------------------------------------------
     #----------     Checkpoints     --------------
@@ -1044,7 +1051,10 @@ def main_function(args: ConfigDict):
             checkpoint_io.save(filename='0.pt', global_step=it, epoch_idx=epoch_idx)
 
     if args.ddp:
-        trainer = DDP(trainer, device_ids=args.device_ids, output_device=local_rank, find_unused_parameters=False)
+        # NOTE: When there are no intersecting rays with distant-view models, \
+        #       their parameters will not be used and hence raise an error.
+        #       For now, we set find_unused_parameters to True
+        trainer = DDP(trainer, device_ids=args.device_ids, output_device=local_rank, find_unused_parameters=True)
         trainer_module = trainer.module
 
     # Default to [True]], since grad scaler is harmless even not using half precision.
@@ -1065,8 +1075,6 @@ def main_function(args: ConfigDict):
         # @profile
         def train_step():
             nonlocal it, epoch_idx, t0, end
-            # if args.ddp:
-            #     train_sampler.set_epoch(epoch_idx)
             int_it = int(it // world_size)
             local_it = it + rank
             trainer_module.preprocess_per_train_step(local_it, logger=logger)
@@ -1300,4 +1308,4 @@ def make_parser():
 
 if __name__ == "__main__":
     bc = make_parser()
-    main_function(bc.parse(print_config=is_master()))
+    main_function(bc.parse(print_config=False))

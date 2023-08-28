@@ -24,6 +24,7 @@
   - [\> Start a fresh new training](#-start-a-fresh-new-training)
   - [\> Resume a previous experiment](#-resume-a-previous-experiment)
   - [\> Rich training logs](#-rich-training-logs)
+  - [\> Optional DDP training](#-optional-ddp-training)
   - [\> Debug training errors](#-debug-training-errors)
 - [Rendering](#rendering)
   - [\> Replay](#-replay)
@@ -33,7 +34,6 @@
 - [LiDAR simulation](#lidar-simulation)
   - [\> Simulate a single LiDAR](#-simulate-a-single-lidar)
   - [\> Simulate a demo of a list of LiDAR models](#-simulate-a-demo-of-a-list-of-lidar-models)
-
 - [LiDAR evaluation](#lidar-evaluation)
 - [Mesh extraction](#mesh-extraction)
 - [Occupancy grid extraction](#occupancy-grid-extraction)
@@ -94,6 +94,103 @@ tensorboard --logdir /path/to/logs/xxx
 The logging frequency of scalars is controlled by `training:i_log` field. (how many iterations per log entry).
 
 The logging frequency of images (visualization or renderings) is controlled by `training:i_val` field.
+
+#### > Optional DDP training
+
+:arrow_right: **Single node multi GPUs**
+
+Taking an example of a single machine with 4 GPUs:
+
+:pushpin: NOTE: You only need to add the `--ddp` option to the command line arguments of `train.py`.
+
+```shell
+python -m torch.distributed.launch --nproc_per_node=4 \
+code_single/tools/train.py \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--ddp
+```
+
+In the above example, if everything works properly, you will see the following message printed four times with differen ranks in the logs:
+
+<details>
+
+```
+=> Enter init_process_group(): 
+	=> rank=0
+	=> world_size=4
+	=> local_rank=0
+	=> master_addr=127.0.0.1
+	=> master_port=29500
+...
+=> Done init Env @ DDP: 
+	=> device_ids set to [0]
+	=> rank=0
+	=> world_size=4
+	=> local_rank=0
+	=> master_addr=127.0.0.1
+	=> master_port=29500
+...
+```
+
+</details>
+
+:arrow_right: **Multi nodes multi GPUs**
+
+Taking an example of a 2 nodes with 4 GPUs each (i.e. 8 GPUs in total):
+
+:pushpin: NOTE: You only need to add the `--ddp` option to the command line arguments of `train.py`.
+
+```shell
+python -m torch.distributed.launch --nnodes=$WORLD_SIZE --nproc_per_node=4 \
+--master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --node_rank=$RANK \
+code_single/tools/train.py \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--ddp 
+```
+
+In the above example, if everything works properly, you will see the following message printed four times with differen ranks in the logs of **the master node**:
+
+<details>
+
+```
+=> Enter init_process_group(): 
+	=> rank=0
+	=> world_size=8
+	=> local_rank=0
+	=> master_addr=dlcfevx8ltikuljg-master-0
+	=> master_port=23456
+...
+=> Done init Env @ DDP: 
+	=> device_ids set to [0]
+	=> rank=0
+	=> world_size=8
+	=> local_rank=0
+	=> master_addr=dlcfevx8ltikuljg-master-0
+	=> master_port=23456
+...
+```
+
+As for the worker node's print logs:
+
+```
+=> Enter init_process_group(): 
+	=> rank=4
+	=> world_size=8
+	=> local_rank=0
+	=> master_addr=dlcfevx8ltikuljg-master-0
+	=> master_port=23456
+...
+=> Done init Env @ DDP: 
+	=> device_ids set to [0]
+	=> rank=4
+	=> world_size=8
+	=> local_rank=0
+	=> master_addr=dlcfevx8ltikuljg-master-0
+	=> master_port=23456
+...
+```
+
+</details>
 
 #### > Debug training errors
 

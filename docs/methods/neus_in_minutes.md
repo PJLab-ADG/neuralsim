@@ -41,11 +41,16 @@ https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0
 
 ### Major settings
 
-| Settings                                            | Dataset                                                      | Config file                                                  |
-| --------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| Multi-view reconstruction without mask (BlendedMVS) | [BlendedMVS dataset preparation](../../dataio/bmvs/README.md) | [lotd_neus.bmvs.230814.yaml](../../code_single/configs/object_centric/lotd_neus.bmvs.230814.yaml) |
-| Multi-view reconstruction with mask (DTU)           | [NeuS/DTU dataset preparation](../../dataio/dtu/README.md)   |                                                              |
-| Multi-view reconstruction without mask (DTU)        | [NeuS/DTU dataset preparation](../../dataio/dtu/README.md)   |                                                              |
+#### > Without mask
+
+| Dataset                                                      | Config file                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| COLMAP dataset + Apperance Embeddings                        | [lotd_neus.colmap.230826.yaml](../../code_single/configs/exps/lotd_neus.colmap.230826.yaml) |
+| COLMAP dataset + Pose refinement + Apperance Embeddings      | [lotd_neus.colmap_refine.230826.yaml](../../code_single/configs/exps/lotd_neus.colmap_refine.230826.yaml) |
+| [BlendedMVS dataset preparation](../../dataio/bmvs/README.md) | [lotd_neus.bmvs.230814.yaml](../../code_single/configs/object_centric/lotd_neus.bmvs.230814.yaml) |
+| [NeuS/DTU dataset preparation](../../dataio/dtu/README.md)   |                                                              |
+
+#### > With mask (WIP)
 
 ### Instructions
 

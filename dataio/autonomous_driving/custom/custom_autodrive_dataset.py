@@ -308,7 +308,7 @@ class CustomAutoDriveDataset(DatasetIO):
         cam_front_tracks_in_world = cam_front_poses_in_world[:, :3, 3]
         
         # NOTE: Average rotation about z axis.
-        r = R.from_matrix(cam_front_tracks_in_world[:, :3, :3])
+        r = R.from_matrix(cam_front_poses_in_world[:, :3, :3])
         avg_rot = r.mean()
         avg_rot_zyx = avg_rot.as_euler('zyx', degrees=False)
         avg_rot_z: float = avg_rot_zyx[0]

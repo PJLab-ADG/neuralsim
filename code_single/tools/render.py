@@ -210,10 +210,8 @@ def main_function(args: ConfigDict):
                 ic(march_step_size)
                 accel = OccupancyGridAS(
                     model.space, 
-                    occ_cfg=ConfigDict(
-                        resolution=128, occ_val_fn_cfg=ConfigDict(type='sdf', inv_s=256.0), occ_thre=0.8, 
-                        init_cfg=ConfigDict(num_steps=128, num_pts=2**24, mode='from_net')
-                    ))
+                    resolution=128, occ_val_fn_cfg=ConfigDict(type='sdf', inv_s=256.0), occ_thre=0.8, 
+                    init_cfg=ConfigDict(num_steps=128, num_pts=2**24, mode='from_net'))
                 # NOTE: `step_size` in world space.
                 model.accel = accel
                 # Run init from net

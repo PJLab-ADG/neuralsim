@@ -47,7 +47,7 @@ NOTE:
 ### Extract mono cues
 
 ```shell
-cd /path/to/neuralsim/dataio/autonomous_driving/waymo
+cd /path/to/neuralsim/dataio/colmap/
 
 # Extract depth
 python extract_mono_cues.py --task=depth --data_dir=/path/to/data_dir --omnidata_path=/path/to/omnidata/omnidata_tools/torch/

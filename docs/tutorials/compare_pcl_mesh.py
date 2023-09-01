@@ -207,7 +207,7 @@ def main_function():
     #---- Freeze the scene 
     # NOTE: This will also update the scene_graph. 
     #       So all the nodes, including the sensors and ego_car / ego_drone is also frozen at the given frame,
-    #       and each nodes' world_transform is automatically broadcasted from leaf to root.
+    #       and each nodes' world_transform is automatically broadcasted from root to leaves.
     scene.frozen_at(frame_ind)
 
     #---- Get the sensor/observer

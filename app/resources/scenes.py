@@ -89,7 +89,10 @@ class Scene(object):
     #----------------------  Loading, updating, reading
     # @profile
     def frozen_at(self, i: Union[int, torch.LongTensor]):
-        """ Frozen at a single time frame or multiple time frames
+        """ Frozen at a single time frame or multiple time frames, and update the scene graph.
+        This will first retrieve data at the given frame for each nodes' attributes, 
+        and then update the scene graph from the root to leaves, 
+        in which the `world_transform` of each node will also be calculated from root to leaf.
 
         Args:
             i (Union[int, torch.LongTensor]): The frame indice(s) to freeze the scene at
@@ -98,6 +101,9 @@ class Scene(object):
         # self.root.frozen_at(i)
         for n in self.all_nodes:
             n._frozen_at(i)
+        
+        # NOTE: Update the scene graph, from root to leaf.
+        #       The `world_transform` of each node will also be calculated from root to leaf.
         self.root.update()
     
     def frozen_at_full(self):

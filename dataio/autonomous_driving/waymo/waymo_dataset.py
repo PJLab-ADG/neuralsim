@@ -650,7 +650,7 @@ if __name__ == "__main__":
         scene.debug_vis_anim(
             scene_dataloader=scene_dataloader, 
             #  plot_image=True, camera_length=8., 
-            plot_lidar=True, lidar_pts_ds=2, 
+            plot_lidar=True, lidar_pts_downsample=2, 
             # mesh_file=mesh_file
         )
 

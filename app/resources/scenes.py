@@ -14,13 +14,14 @@ import os
 import pickle
 import functools
 import numpy as np
-from typing import Callable, Union, List, Dict, NamedTuple, Tuple, Type
+from typing import Callable, Literal, Union, List, Dict, NamedTuple, Tuple, Type
 
 import torch
 import torch.nn as nn
 
 from nr3d_lib.models.attributes import *
 from nr3d_lib.utils import IDListedDict, import_str
+from nr3d_lib.models.spatial_accel.occgrid_accel import OccupancyGridAS
 
 from app.resources import SceneNode
 from app.resources.observers import OBSERVER_CLASS_NAMES, OBSERVER_TYPE, Camera, Lidar, RaysLidar
@@ -815,15 +816,30 @@ class Scene(object):
         camera_length: float = 0.6, 
         plot_image = False, # Plot camera observations (images)
         plot_lidar = False, # Plot lidar observations (pointcloud)
-        lidar_pts_ds: int = 2, # In case lidar pts are too dense. Set to 1 to plot all
+        lidar_pts_downsample: int = 2, # In case lidar pts are too dense. Set to 1 to plot all
         mesh_file: str = None, # Filepath to the mesh
+        extra_draw: List[Literal['main.occ_grid']] = [], 
     ):
         if plot_lidar or plot_image:
             assert scene_dataloader is not None, "Need scene_dataloader to plot lidar / camera data"
         
         import vedo
         from nr3d_lib.plot import create_camera_frustum_vedo, get_n_ind_pallete
-        
+                
+        # Setup the scene       
+        plt = vedo.Plotter(axes=1, interactive=False)
+        lidar_pts = None
+        pics = []
+        fi_counter = 0
+
+        #---- Plot input mesh
+        surf = None
+        if mesh_file is not None:
+            surf = vedo.Mesh(mesh_file)
+            # surf.lighting('ambient')
+            surf.color('gray8')
+
+        #---- Plot camera frustums
         self.frozen_at(0)
         cam_actors = {}
         colors = get_n_ind_pallete(len(self.observer_groups_by_class_name['Camera'].keys()))
@@ -833,32 +849,52 @@ class Scene(object):
             # c2w = cam_node.world_transform.mat_4x4().data.cpu().numpy() # Set in animation
             cam = create_camera_frustum_vedo(WH, intr, np.eye(4), camera_length, color=colors[ci], lw=3)
             cam_actors[cam_id] = cam
-        
-        # Setup the scene
-        scene_box = None # [xmin, xmax, ymin, ymax, zmin, zmax]
-        if self.main_class_name in self.drawable_groups_by_class_name.keys():
-            main_obj = self.drawable_groups_by_class_name[self.main_class_name][0]
-            if main_obj.model is not None:
-                aabb = (main_obj.scale.ratio() * main_obj.model.space.aabb).data.cpu().numpy().T.reshape(-1).tolist()
-                scene_box = vedo.Box(size=aabb)
-                scene_box.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy())
-        if scene_box is None:
+
+        #---- Plot main object (i.e. the focused object in object-centric scenes, \
+        #       room in indoor scenes, street in street-views)
+        aabb = None # [[xmin,ymin,zmin], [xmax,ymax,zmax]]
+        main_obj = self.all_nodes_by_class_name[self.main_class_name][0]
+        main_box = None
+        main_label = None
+        main_occ_grid = None
+        if main_obj.model is not None and main_obj.model.space is not None:
+            aabb = (main_obj.scale.ratio() * main_obj.model.space.aabb).data.cpu().numpy()
+        elif 'aabb' in self.metas:
             # A nice alternative aabb choice when models are not available
-            scene_box = vedo.Box(size=self.metas['aabb'].T.reshape(-1).tolist())
-        if scene_box is not None:
-            scene_box = scene_box.wireframe()
-        lidar_pts = None
-        surf = None
-        if mesh_file is not None:
-            surf = vedo.Mesh(mesh_file)
-            # surf.lighting('ambient')
-            surf.color('gray8')
-        pics = []
-        
-        fi_counter = 0
-        
+            aabb = self.metas['aabb']
+        else:
+            aabb = None
+        if aabb is not None:
+            bound = aabb.T.reshape(-1).tolist() # [xmin, xmax, ymin, ymax, zmin, zmax]
+            corner = aabb[0]
+            main_box = vedo.Box(size=bound)
+            main_box.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy(), reset=True)       
+            main_box.lw(4)
+            main_box.wireframe()
+            main_box.lighting('off')
+            
+            # Add box axis (local coordinate frame) on the corner
+            ax_length = (aabb[1] - aabb[0]).min()
+            ax = vedo.Arrow(corner, corner+np.array([ax_length,0,0]), c='r', s=0.2)
+            ay = vedo.Arrow(corner, corner+np.array([0,ax_length,0]), c='g', s=0.2)
+            az = vedo.Arrow(corner, corner+np.array([0,0,ax_length]), c='b', s=0.2)
+            axes = vedo.Assembly(ax,ay,az)
+            axes.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy())
+            main_box = vedo.Assembly(main_box, axes)
+            
+            # Add box label
+            label_str = main_obj.id[:6]
+            corner_in_world = main_obj.world_transform(torch.tensor(corner, device=self.device)).data.cpu().numpy()
+            main_label = vedo.Text3D(f"{main_obj.class_name}:{label_str}", pos=corner_in_world, s=1, c='black', literal=True)
+            main_label.follow_camera(plt.camera) # Use plt's active camera
+
+        if main_obj.model is not None and isinstance(getattr(main_obj.model, 'accel', None), OccupancyGridAS):
+            accel = main_obj.model.accel
+            main_occ_grid = accel.debug_vis(draw=False)
+            main_occ_grid.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy(), reset=True)
+
         def handle_timer(event):
-            nonlocal fi_counter, node_actors, node_labels, txt2d, lidar_pts, lidar_pts_ds
+            nonlocal fi_counter, node_actors, node_labels, txt2d, lidar_pts, lidar_pts_downsample
             fi = fi_counter % len(self) # Replay again and agian ...
             self.frozen_at(fi)
             #---- Set camera pose
@@ -871,6 +907,7 @@ class Scene(object):
                 node_actors.clear()
                 node_labels.clear()
             
+            #---- Plot dynamic objects
             for oid, node in self.all_nodes_by_class_name.get('Vehicle', {}).items():
                 if not node.valid:
                     continue
@@ -916,12 +953,12 @@ class Scene(object):
 
             #---- Plot lidar pointcloud
             if plot_lidar:
-                lidar_pts_ds = int(lidar_pts_ds)
+                lidar_pts_downsample = int(lidar_pts_downsample)
                 if fi_counter > 0:
                     plt.remove(lidar_pts)
                 lidar0 = self.all_nodes_by_class_name['RaysLidar'][scene_dataloader.lidar_id_list[0]]
                 lidar_data = scene_dataloader.get_lidar_gts(self.id, lidar0.id, fi, filter_if_configured=False, device=self.device)
-                pts = torch.addcmul(lidar_data['rays_o'][::lidar_pts_ds], lidar_data['rays_d'][::lidar_pts_ds], lidar_data['ranges'][::lidar_pts_ds].unsqueeze(-1))
+                pts = torch.addcmul(lidar_data['rays_o'][::lidar_pts_downsample], lidar_data['rays_d'][::lidar_pts_downsample], lidar_data['ranges'][::lidar_pts_downsample].unsqueeze(-1))
                 pts_in_world = lidar0.world_transform.forward(pts).data.cpu().numpy()
                 pts_c = (vedo.color_map(pts_in_world[:, 2], 'rainbow', vmin=-2., vmax=9.) * 255.).clip(0,255).astype(np.uint8)
                 pts_c = np.concatenate([pts_c, np.full_like(pts_c[:,:1], 255)], axis=-1) # RGBA is ~50x faster
@@ -959,11 +996,11 @@ class Scene(object):
             txt2d.text(f"current frame = [{fi}/{len(self)}]", "top-right")
             txt2d.text(f"scene.id = {self.id}", "top-left")
             txt2d.text("..press q to quit", "bottom-right")
-            # plt.show(scene_box, txt2d, lidar_pts, *cam_actors.values(), *node_actors.values(), *node_labels, axes=0, resetcam=(fi_counter==0))
-            plt.show(txt2d, lidar_pts, surf, *pics, *cam_actors.values(), *node_actors.values(), *node_labels, axes=0, resetcam=(fi_counter==0))
+            plt.show(txt2d, main_box, main_label, main_occ_grid, 
+                     lidar_pts, surf, *pics, *cam_actors.values(), *node_actors.values(), *node_labels, 
+                     axes=0, resetcam=(fi_counter==0))
             fi_counter += 1
 
-        plt = vedo.Plotter(axes=1, interactive=False)
         timerevt = plt.add_callback('timer', handle_timer)
         is_playing = False
         timer_id = None

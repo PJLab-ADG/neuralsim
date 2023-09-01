@@ -1063,6 +1063,17 @@ def main_function(args: ConfigDict):
     scaler_lidar = GradScaler(init_scale=128.0, enabled=enable_grad_scaler)
     scaler_image_patch = GradScaler(init_scale=128.0, enabled=enable_grad_scaler)
 
+    #--------------------------------------------------
+    # NOTE: Debug Scene and SceneDataLoader before training
+    if args.get('debug_scene', False):
+        scene = scene_bank[0]
+        scene.debug_vis_anim(
+            scene_dataloader=scene_dataloader_train, 
+            plot_image='camera' in scene_dataloader_train.config.tags, camera_length=2.0, 
+            plot_lidar='lidar' in scene_dataloader_train.config.tags, lidar_pts_downsample=2, 
+            # mesh_file=mesh_path, 
+        )
+
     t0 = time.time()
     log.info(f"=> Start [train], it={it}, lr={optimizer.param_groups[0]['lr']}, in {exp_dir}")
     end = (it >= args.training.num_iters)

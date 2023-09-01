@@ -7,7 +7,7 @@
 
 | Methods                                                      | Official / Un-official | Get started                        | Notes, major difference from paper, etc.                     |
 | ------------------------------------------------------------ | ---------------------- | -------------------------------------------- | ------------------------------------------------------------ |
-| [NeuS](https://lingjie0206.github.io/papers/NeuS/) in minutes | Un-official            | [readme](../docs/methods/neus_in_minutes.md) | - support object-centric datasets as well as <u>indoor</u> datasets<br />- fast and stable convergence without needing mask<br />- support using [NGP](https://github.com/NVlabs/instant-ngp) / [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-) or MLPs as cr&dv representations<br />- large pixel batch size (4096) & pixel error maps |
+| [NeuS](https://lingjie0206.github.io/papers/NeuS/) in minutes | Un-official            | [readme](../docs/methods/neus_in_10_minutes.md) | - support object-centric datasets as well as <u>indoor</u> datasets<br />- fast and stable convergence without needing mask<br />- support using [NGP](https://github.com/NVlabs/instant-ngp) / [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-) or MLPs as cr&dv representations<br />- large pixel batch size (4096) & pixel error maps |
 | [NGP](https://github.com/NVlabs/instant-ngp) | Un-official |  | - support using [NGP](https://github.com/NVlabs/instant-ngp) / [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-) or MLPs as representations |
 
 ### Street-view

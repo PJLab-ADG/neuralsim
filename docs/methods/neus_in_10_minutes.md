@@ -1,4 +1,4 @@
-# [neuralsim] NeuS in minutes
+# [neuralsim] NeuS in 10 minutes
 
 [website](https://lingjie0206.github.io/papers/NeuS/) | [arxiv](https://arxiv.org/abs/2106.10689) | [official_repo](https://github.com/Totoro97/NeuS) | 
 

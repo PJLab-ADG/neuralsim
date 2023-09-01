@@ -865,7 +865,7 @@ class Scene(object):
                 node_actors.clear()
                 node_labels.clear()
             
-            for oid, node in self.all_nodes_by_class_name['Vehicle'].items():
+            for oid, node in self.all_nodes_by_class_name.get('Vehicle', {}).items():
                 if not node.valid:
                     continue
                 

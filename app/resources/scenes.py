@@ -891,7 +891,8 @@ class Scene(object):
         if main_obj.model is not None and isinstance(getattr(main_obj.model, 'accel', None), OccupancyGridAS):
             accel = main_obj.model.accel
             main_occ_grid = accel.debug_vis(draw=False)
-            main_occ_grid.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy(), reset=True)
+            if main_occ_grid is not None:
+                main_occ_grid.apply_transform(main_obj.world_transform.mat_4x4().data.cpu().numpy(), reset=True)
 
         def handle_timer(event):
             nonlocal fi_counter, node_actors, node_labels, txt2d, lidar_pts, lidar_pts_downsample

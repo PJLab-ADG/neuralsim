@@ -139,7 +139,7 @@ class COLMAPDataset(DatasetIO):
 
     def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         assert self.image_mono_depth_dirname is not None, "You should specify image_mono_depth_dirname"
-        img_name = self.img_names[frame_index]
+        img_name = self.image_names[frame_index]
         fpath = os.path.join(self.data_dir, self.image_mono_depth_dirname, f'{img_name}.npz')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         depth = np.load(fpath)['arr_0'].astype(np.float32)
@@ -147,7 +147,7 @@ class COLMAPDataset(DatasetIO):
 
     def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         assert self.image_mono_normals_dirname is not None, "You should specify image_mono_normals_dirname"
-        img_name = self.img_names[frame_index]
+        img_name = self.image_names[frame_index]
         fpath = os.path.join(self.data_dir, self.image_mono_normals_dirname, f'{img_name}.jpg')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         # [-1.,1.] np.float32 in OpenCV local coords

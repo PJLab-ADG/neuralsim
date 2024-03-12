@@ -28,7 +28,7 @@ from nr3d_lib.fmt import log
 from nr3d_lib.checkpoint import sorted_ckpts
 from nr3d_lib.config import ConfigDict, BaseConfig
 from nr3d_lib.utils import IDListedDict, cond_mkdir
-from nr3d_lib.models.grids.utils import offset_voxel
+from nr3d_lib.models.grid_encodings.utils import voxel_verts
 from nr3d_lib.models.spatial import AABBSpace, ForestBlockSpace
 
 from app.resources import Scene, load_scene_bank, AssetBank
@@ -36,13 +36,13 @@ from app.resources import Scene, load_scene_bank, AssetBank
 @torch.no_grad()
 def main_function(args: ConfigDict):
     exp_dir = args.exp_dir
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     dtype = torch.float32
 
     #---------------------------------------------
     #--------------     Load     -----------------
     #---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     # Automatically load 'final_xxx.pt' or 'latest.pt'
     ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
     log.info("=> Use ckpt:" + str(ckpt_file))
@@ -59,9 +59,8 @@ def main_function(args: ConfigDict):
     #-----------     Asset Bank     --------------
     #---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     #---------------------------------------------
     #---     Load assets to scene objects     ----
@@ -69,10 +68,10 @@ def main_function(args: ConfigDict):
     # for scene in scene_bank:
     scene = scene_bank[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
 
-    scene.frozen_at(0)
+    scene.frozen_at_global_frame(0)
 
     if len(lst:=scene.get_drawable_groups_by_class_name(scene.main_class_name)) > 0:
         obj = lst[0]
@@ -92,11 +91,11 @@ def main_function(args: ConfigDict):
     output_file = os.path.join(output_dir, f"{name}.npz")
     
     model = obj.model
-    box_in_obj_net = offset_voxel(_0=-1., _1=1.).float().to(device)
+    box_in_obj_net = voxel_verts(_0=-1., _1=1.).float().to(device)
     aabb_objnet = model.space.aabb
     aabb_objnet_space = AABBSpace(aabb=aabb_objnet, device=device, dtype=torch.float)
     box_in_obj = aabb_objnet_space.unnormalize_coords(box_in_obj_net)
-    box_in_world = obj.world_transform(box_in_obj * obj.scale.ratio())
+    box_in_world = obj.world_transform(box_in_obj * obj.scale.vec_3())
     aabb_in_world = torch.stack([box_in_world.min(dim=0).values, box_in_world.max(dim=0).values], dim=0)
     aabb_space = AABBSpace(aabb=aabb_in_world)
     resolution = ((aabb_in_world[1] - aabb_in_world[0]) / args.occ_res).long()
@@ -104,7 +103,7 @@ def main_function(args: ConfigDict):
         
     def sdf_query_fn(x_in_world: torch.Tensor):
         # NOTE: x: [-1,1]
-        x_in_obj = obj.world_transform(x_in_world, inv=True) / obj.scale.ratio()
+        x_in_obj = obj.world_transform(x_in_world, inv=True) / obj.scale.vec_3()
         # NOTE: Put inf values for out-of-bound coordinates (caused by pose difference of obj and world)
         sdf = model.implicit_surface.forward_in_obj(x_in_obj, invalid_sdf=np.inf, return_h=False, with_normal=False)['sdf']
         # if isinstance(model.space, AABBSpace):

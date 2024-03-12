@@ -18,31 +18,31 @@ from app.resources import Scene
 
 class PhotometricLoss(nn.Module):
     def __init__(
-        self, w=1.0, anneal: ConfigDict=None, 
+        self, w=1.0, anneal: dict=None, 
         respect_ignore_mask=False, 
         should_seperate_occ_areas=False, 
         non_occupied_rgb_gt: Literal['white', 'black']=None, 
-        fn_type: Union[str, ConfigDict]='mse', fn_param: dict={}) -> None:
+        fn_type: Union[str, dict]='mse', fn_param: dict={}) -> None:
         """ Loss to utilize pixel supervision.
 
         Args:
             w (float, optional): Loss weight. Defaults to 1.0.
-            anneal (ConfigDict, optional): Configuration for weight annealing. Defaults to None.
+            anneal (dict, optional): Configuration for weight annealing. Defaults to None.
             respect_ignore_mask (bool, optional): 
                 By default, all rendered pixels will be used. 
-                If true, the 'rgb_ignore_mask' in the ground truth will be respected to ignore certain part(s) of pixels, 
+                If true, the 'image_ignore_mask' in the ground truth will be respected to ignore certain part(s) of pixels, 
                     e.g. non-occupied areas or areas belonging to dynamic objects.
                 Defaults to False.
-                NOTE: The 'rgb_ignore_mask' component in the ground truth is configured by `training.dataloader.tags.rgb_ignore_mask`.
+                NOTE: The 'image_ignore_mask' component in the ground truth is configured by `training.dataloader.tags.image_ignore_mask`.
             should_separate_occ_areas (bool, optional): 
                 By default, all pixels will be compared as a whole with the ground truth to calculate loss. 
-                If true, the 'rgb_mask' in the ground truth will be used to separately calculate loss for occupied and non-occupied areas.
+                If true, the 'image_occupancy_mask' in the ground truth will be used to separately calculate loss for occupied and non-occupied areas.
                 Defaults to False.
             non_occupied_rgb_gt (Literal['white', 'black'], optional): 
                 Optionally, you can manually specify the pixel values for the non-occupied areas in the ground truth. 
                 If not specified, the non-occupied part of the ground truth image will be used as is.
                 Defaults to None.
-            fn_type (Union[str, ConfigDict], optional): The type of loss function. Defaults to 'mse'.
+            fn_type (Union[str, dict], optional): The type of loss function. Defaults to 'mse'.
             fn_param (dict, optional): Additional parameters for the loss function. Defaults to {}.
         """
         
@@ -86,36 +86,37 @@ class PhotometricLoss(nn.Module):
             raise RuntimeError(f'Invalid fn_type={fn_type}')
 
     def forward(self, scene: Scene, ret: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
+        ret_losses = dict()
         device = scene.device
-        losses = dict()
-        rgb_pred = ret['rendered']['rgb_volume']
-        rgb_gt = ground_truth['rgb'].clone().to(device).view(rgb_pred.shape)
         w = self.w if self.w_fn is None else self.w_fn(it=it)
+        
+        rgb_pred = ret['rendered']['rgb_volume']
+        rgb_gt = ground_truth['image_rgb'].clone().to(device).view(rgb_pred.shape)
         
         rgb_remain_mask = None
         if self.respect_ignore_mask:
-            assert 'rgb_ignore_mask' in ground_truth
-            rgb_remain_mask = ~ground_truth['rgb_ignore_mask'].view(*rgb_pred.shape[:-1])
+            assert 'image_ignore_mask' in ground_truth
+            rgb_remain_mask = ~ground_truth['image_ignore_mask'].view(*rgb_pred.shape[:-1])
         
         if not self.should_seperate_occ_areas:
             """
             Use full-image prediction and full-image GT (considers ignore mask)
             """
             if self.non_occupied_rgb_gt_value is not None:
-                assert 'rgb_mask' in ground_truth
-                gt_occ_mask = ground_truth['rgb_mask'].view(*rgb_pred.shape[:-1])
+                assert 'image_occupancy_mask' in ground_truth
+                gt_occ_mask = ground_truth['image_occupancy_mask'].view(*rgb_pred.shape[:-1])
                 rgb_gt[gt_occ_mask] = self.non_occupied_rgb_gt_value
-            # losses['loss_rgb'] = w * self.fn(rgb_pred, rgb_gt, mask=rgb_remain_mask, reduction='mean_in_mask')
-            losses['loss_rgb'] = w * self.fn(rgb_pred, rgb_gt, mask=rgb_remain_mask, reduction='mean')
+            # ret_losses['loss_rgb'] = w * self.fn(rgb_pred, rgb_gt, mask=rgb_remain_mask, reduction='mean_in_mask')
+            ret_losses['loss_rgb'] = w * self.fn(rgb_pred, rgb_gt, mask=rgb_remain_mask, reduction='mean')
             with torch.no_grad():
                 err = self.fn(rgb_pred.data, rgb_gt.data, mask=rgb_remain_mask, reduction='none')
         else:
             """
             Seperately consider occupied area's pred/GT and non-occupied area's (e.g. sky's) pred/GT
             """
-            assert 'rgb_mask' in ground_truth
+            assert 'image_occupancy_mask' in ground_truth
             assert 'rgb_volume_non_occupied' in ret['rendered']
-            gt_occ_mask = ground_truth['rgb_mask'].view(*rgb_pred.shape[:-1])
+            gt_occ_mask = ground_truth['image_occupancy_mask'].view(*rgb_pred.shape[:-1])
             gt_not_occ_mask = gt_occ_mask.logical_not()
             
             #---- For occupied part
@@ -127,19 +128,19 @@ class PhotometricLoss(nn.Module):
             else:
                 rgb_gt_occupied = rgb_gt
                 mask_rgb_occupied = gt_occ_mask if rgb_remain_mask is None else (gt_occ_mask * rgb_remain_mask)
-            # losses['loss_rgb.occupied'] = w * self.fn(rgb_pred_occupied, rgb_gt_occupied, mask=mask_rgb_occupied, reduction='mean_in_mask')
-            losses['loss_rgb.occupied'] = w * self.fn(rgb_pred_occupied, rgb_gt_occupied, mask=mask_rgb_occupied, reduction='mean')
+            # ret_losses['loss_rgb.occupied'] = w * self.fn(rgb_pred_occupied, rgb_gt_occupied, mask=mask_rgb_occupied, reduction='mean_in_mask')
+            ret_losses['loss_rgb.occupied'] = w * self.fn(rgb_pred_occupied, rgb_gt_occupied, mask=mask_rgb_occupied, reduction='mean')
             with torch.no_grad():
                 err1 = self.fn(rgb_pred_occupied.data, rgb_gt_occupied.data, mask=mask_rgb_occupied, reduction='none')
             
             #---- For non occupied part
             rgb_pred_non_occupied = ret['rendered']['rgb_volume_non_occupied']
             mask_rgb_non_occupied = gt_not_occ_mask if rgb_remain_mask is None else (gt_not_occ_mask * rgb_remain_mask)
-            # losses['loss_rgb.not_occupied'] = w * self.fn(rgb_pred_non_occupied, rgb_gt, mask=mask_rgb_non_occupied, reduction='mean_in_mask')
-            losses['loss_rgb.not_occupied'] = w * self.fn(rgb_pred_non_occupied, rgb_gt, mask=mask_rgb_non_occupied, reduction='mean')
+            # ret_losses['loss_rgb.not_occupied'] = w * self.fn(rgb_pred_non_occupied, rgb_gt, mask=mask_rgb_non_occupied, reduction='mean_in_mask')
+            ret_losses['loss_rgb.not_occupied'] = w * self.fn(rgb_pred_non_occupied, rgb_gt, mask=mask_rgb_non_occupied, reduction='mean')
             with torch.no_grad():
                 err2 = self.fn(rgb_pred_non_occupied.data, rgb_gt.data, mask=mask_rgb_non_occupied, reduction='none')
             
             err = err1 + err2
             
-        return losses, err.data.mean(dim=-1)
+        return ret_losses, err.data.mean(dim=-1)

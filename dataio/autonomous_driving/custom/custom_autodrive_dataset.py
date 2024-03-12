@@ -7,13 +7,13 @@ import os
 import pickle
 import numpy as np
 from glob import glob
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 from scipy.spatial.transform import Rotation as R
 
 from nr3d_lib.utils import load_rgb
 from nr3d_lib.config import ConfigDict
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 from dataio.utils import clip_node_data, clip_node_segments
 from dataio.autonomous_driving.custom.filter_dynamic import stat_dynamic_objects
 
@@ -30,25 +30,8 @@ def idx_to_mask_filename(frame_index, compress=True):
     ext = 'npz' if compress else 'npy'
     return f'{idx_to_frame_str(frame_index)}.{ext}'
 
-#---------------- Cityscapes semantic segmentation
-cityscapes_classes = [
-    'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
-    'traffic light', 'traffic sign', 'vegetation', 'terrain', 'sky',
-    'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
-    'bicycle'
-]
-cityscapes_classes_ind_map = {cn: i for i, cn in enumerate(cityscapes_classes)}
-
-cityscapes_dynamic_classes = [
-    'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle'
-]
-
-cityscapes_human_classes = [
-    'person', 'rider'
-]
-
-class CustomAutoDriveDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class CustomAutoDriveDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
     
@@ -58,6 +41,7 @@ class CustomAutoDriveDataset(DatasetIO):
         image_dirname: str = 'images', 
         lidar_dirname: str = 'lidars', 
         mask_dirname: str = 'masks', 
+        mask_taxonomy: Literal['cityscapes', 'ade20k'] = 'cityscapes', 
         mono_depth_dirname: str = "depths", 
         mono_normals_dirname: str = "normals", 
         ):
@@ -67,7 +51,6 @@ class CustomAutoDriveDataset(DatasetIO):
         self.mono_depth_dirname = mono_depth_dirname
         self.mono_normals_dirname = mono_normals_dirname
         self.lidar_dirname = lidar_dirname
-        self.mask_dirname = mask_dirname
 
         """
         An example dataset's world convention:
@@ -84,7 +67,90 @@ class CustomAutoDriveDataset(DatasetIO):
         opencv_to_world = np.eye(4)
         opencv_to_world[:3 ,:3] = np.array([[0, 0, 1],[-1, 0, 0],[0, -1, 0]])
         self.opencv_to_world = opencv_to_world
-    
+
+        self._populate_mask_settings(mask_dirname=mask_dirname, mask_taxonomy=mask_taxonomy)
+
+    def _populate_mask_settings(
+        self, 
+        mask_dirname: str = "masks", 
+        mask_taxonomy: Literal['cityscapes', 'ade20k'] = 'cityscapes', ):
+        self.mask_dirname = mask_dirname
+        self.mask_taxonomy = mask_taxonomy
+        # Taxonomy reference source: mmseg/core/evaluation/class_names.py
+        if self.mask_taxonomy == 'cityscapes':
+            #---------------- Cityscapes semantic segmentation
+            self.semantic_classes = [
+                'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
+                'traffic light', 'traffic sign', 'vegetation', 'terrain', 'sky',
+                'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
+                'bicycle'
+            ]
+            
+            self.semantic_dynamic_classes = [
+                'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle'
+            ]
+            self.semantic_free_space_classes = ['sky']
+            self.semantic_human_classes = ['person', 'rider']
+            self.semantic_road_classes = ['road']
+            
+            self.dataset_classes_in_sematic = {
+                'unknwon': ['train'],
+                'Vehicle': ['car', 'truck', 'bus'],
+                'Pedestrian': ['person'],
+                'Sign': ['traffic light', 'traffic sign'],
+                'Cyclist': ['rider', 'motorcycle', 'bicycle']
+            }
+        
+        elif self.mask_taxonomy == 'ade20k':
+            #---------------- ADE20k semantic segmentation
+            self.semantic_classes = [
+                'wall', 'building', 'sky', 'floor', 'tree', 'ceiling', 'road', 'bed ',
+                'windowpane', 'grass', 'cabinet', 'sidewalk', 'person', 'earth',
+                'door', 'table', 'mountain', 'plant', 'curtain', 'chair', 'car',
+                'water', 'painting', 'sofa', 'shelf', 'house', 'sea', 'mirror', 'rug',
+                'field', 'armchair', 'seat', 'fence', 'desk', 'rock', 'wardrobe',
+                'lamp', 'bathtub', 'railing', 'cushion', 'base', 'box', 'column',
+                'signboard', 'chest of drawers', 'counter', 'sand', 'sink',
+                'skyscraper', 'fireplace', 'refrigerator', 'grandstand', 'path',
+                'stairs', 'runway', 'case', 'pool table', 'pillow', 'screen door',
+                'stairway', 'river', 'bridge', 'bookcase', 'blind', 'coffee table',
+                'toilet', 'flower', 'book', 'hill', 'bench', 'countertop', 'stove',
+                'palm', 'kitchen island', 'computer', 'swivel chair', 'boat', 'bar',
+                'arcade machine', 'hovel', 'bus', 'towel', 'light', 'truck', 'tower',
+                'chandelier', 'awning', 'streetlight', 'booth', 'television receiver',
+                'airplane', 'dirt track', 'apparel', 'pole', 'land', 'bannister',
+                'escalator', 'ottoman', 'bottle', 'buffet', 'poster', 'stage', 'van',
+                'ship', 'fountain', 'conveyer belt', 'canopy', 'washer', 'plaything',
+                'swimming pool', 'stool', 'barrel', 'basket', 'waterfall', 'tent',
+                'bag', 'minibike', 'cradle', 'oven', 'ball', 'food', 'step', 'tank',
+                'trade name', 'microwave', 'pot', 'animal', 'bicycle', 'lake',
+                'dishwasher', 'screen', 'blanket', 'sculpture', 'hood', 'sconce',
+                'vase', 'traffic light', 'tray', 'ashcan', 'fan', 'pier', 'crt screen',
+                'plate', 'monitor', 'bulletin board', 'shower', 'radiator', 'glass',
+                'clock', 'flag'
+            ]
+                        
+            self.semantic_dynamic_classes = [
+                'person', 'car', 'bus', 'truck', 'van', 'boat', 'airplane', 'ship', 
+                'minibike', 'animal', 'bicycle'
+            ]
+            self.semantic_free_space_classes = ['sky']
+            self.semantic_human_classes = ['person']
+            self.semantic_road_classes = ['road']
+            
+            self.dataset_classes_in_sematic = {
+                'unknwon': ['train'],
+                'Vehicle': ['car', 'bus', 'truck', 'van'],
+                'Pedestrian': ['person'],
+                'Sign': ['traffic light'],
+                'Cyclist': ['minibike', 'bicycle']
+            }
+        
+        else:
+            raise RuntimeError(f"Invalid mask_taxonomy={mask_taxonomy}")
+
+        self.semantic_classes_ind_map = {cn: i for i, cn in enumerate(self.semantic_classes)}
+
     def _get_scenario(
         self, scenario: dict, # The original scenario loaded from preprocessed dataset
         *, 
@@ -162,7 +228,7 @@ class CustomAutoDriveDataset(DatasetIO):
                     fi = seg['start_frame'] + seg_local_fi
                     
                     # !!! Fix
-                    seg['data']['global_frame_ind'] = np.arange(seg['start_frame'], seg['start_frame']+seg['n_frames'], 1)
+                    seg['data']['global_frame_inds'] = np.arange(seg['start_frame'], seg['start_frame']+seg['n_frames'], 1)
                     
                     # transform_in_world (12) + scale (3)
                     cur_box = np.concatenate([seg['data']['transform'][seg_local_fi][:3, :].reshape(-1), seg['data']['scale'][seg_local_fi]])
@@ -227,9 +293,9 @@ class CustomAutoDriveDataset(DatasetIO):
                 intr = odict['data']['intr'][..., :3, :3]
                 
                 c2w = odict['data']['c2w']
-                # timestamp = odict['data']['timestamp']
-                # global_frame_ind = odict['data']['global_frame_ind']
-                global_frame_ind = np.arange(original_num_frames)
+                # global_timestamps = odict['data']['global_timestamps']
+                # global_frame_inds = odict['data']['global_frame_inds']
+                global_frame_inds = np.arange(original_num_frames)
                 
                 cam_intrs_all.append(intr)
                 cam_c2ws_all.append(c2w)
@@ -248,8 +314,8 @@ class CustomAutoDriveDataset(DatasetIO):
                     class_name='Camera', n_frames=odict['n_frames'], 
                     camera_model=camera_model, 
                     data=dict(
-                        # timestamp=timestamp, 
-                        global_frame_ind=global_frame_ind, 
+                        # global_timestamps=global_timestamps, 
+                        global_frame_inds=global_frame_inds, 
                         hw=hw, intr=intr, transform=c2w
                     )
                 )
@@ -269,9 +335,9 @@ class CustomAutoDriveDataset(DatasetIO):
         for oid, odict in scenario['observers'].items():
             if (o_class_name:=odict['class_name']) == 'RaysLidar':
                 # l2v = odict['data']['l2v']
-                # timestamp = odict['data']['timestamp']
-                # global_frame_ind = odict['data']['global_frame_ind']
-                global_frame_ind = np.arange(original_num_frames)
+                # global_timestamps = odict['data']['global_timestamps']
+                # global_frame_inds = odict['data']['global_frame_inds']
+                global_frame_inds = np.arange(original_num_frames)
                 
                 if o_class_name not in observer_cfgs.keys():
                     # Ignore un-wanted class_names
@@ -283,8 +349,8 @@ class CustomAutoDriveDataset(DatasetIO):
                 new_odict = dict(
                     class_name='RaysLidar', n_frames=odict['n_frames'], 
                     data=dict(
-                        # timestamp=timestamp, 
-                        global_frame_ind=global_frame_ind, 
+                        # global_timestamps=global_timestamps, 
+                        global_frame_inds=global_frame_inds, 
                         transform=np.tile(np.eye(4), [original_num_frames,1,1])
                         # transform=frame_pose @ l2v
                     )
@@ -354,14 +420,14 @@ class CustomAutoDriveDataset(DatasetIO):
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         return load_rgb(fpath)
 
-    def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
-        fpath = os.path.join(self.root, scene_id, self.rgb_mono_depth_dirname, camera_id, f'{idx_to_frame_str(frame_index)}.npz')
+    def get_image_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+        fpath = os.path.join(self.root, scene_id, self.image_mono_depth_dirname, camera_id, f'{idx_to_frame_str(frame_index)}.npz')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         depth = np.load(fpath)['arr_0'].astype(np.float32)
         return depth
 
-    def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
-        fpath = os.path.join(self.root, scene_id, self.rgb_mono_normals_dirname, camera_id, f'{idx_to_frame_str(frame_index)}.jpg')
+    def get_image_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+        fpath = os.path.join(self.root, scene_id, self.image_mono_normals_dirname, camera_id, f'{idx_to_frame_str(frame_index)}.jpg')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         # [-1.,1.] np.float32 in OpenCV local coords
         normals = load_rgb(fpath)*2-1
@@ -376,37 +442,35 @@ class CustomAutoDriveDataset(DatasetIO):
         else:
             arr = np.load(fpath)
         return arr
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True) -> np.ndarray:
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.ones_like(raw).astype(np.bool8)
-        ret[raw==cityscapes_classes_ind_map['sky']] = False
+        for cls in self.semantic_free_space_classes:
+            ret[raw==self.semantic_classes_ind_map[cls]] = False
         # [H, W] 
         # Binary occupancy mask on RGB image. 1 for occpied, 0 for not.
         return ret.squeeze()
-    def get_dynamic_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
+    def get_image_semantic_mask_by_type(
+        self, scene_id: str, camera_id: str, 
+        sem_type: Literal['dynamic', 'human', 'road', 'anno_dontcare'], 
+        frame_index: int, *, compress=True) -> np.ndarray:
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.zeros_like(raw).astype(np.bool8)
-        for cls in cityscapes_dynamic_classes:
-            ind = cityscapes_classes_ind_map[cls]
-            ret[raw==ind] = True
-        # [H, W] 
-        # Binary dynamic mask on RGB image. 1 for dynamic object, 0 for static.
-        return ret.squeeze()
-    def get_human_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
-        raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
-        ret = np.zeros_like(raw).astype(np.bool8)
-        for cls in cityscapes_human_classes:
-            ind = cityscapes_classes_ind_map[cls]
-            ret[raw==ind] = True
-        # [H, W] 
-        # Binary dynamic mask on RGB image. 1 for human-related object, 0 for other.
-        return ret.squeeze()
-    def get_road_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
-        raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
-        ret = np.zeros_like(raw).astype(np.bool8)
-        ret[raw==cityscapes_classes_ind_map['road']] = True
-        # [H, W] 
-        # Binary dynamic mask on RGB image. 1 for road semantics, 0 for other.
+        if sem_type == 'dynamic':
+            for cls in self.semantic_dynamic_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        elif sem_type == 'human':
+            for cls in self.semantic_human_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        elif sem_type == 'road':
+            for cls in self.semantic_road_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        else:
+            raise RuntimeError(f"Invalid sem_type={sem_type}")
+        # Binary semantic mask on RGB image. 1 for matched, 0 for not.
         return ret.squeeze()
 
     def get_lidar(self, scene_id: str, lidar_id: str, frame_index: int) -> Dict[str, np.ndarray]:
@@ -487,7 +551,7 @@ if __name__ == "__main__":
         from nr3d_lib.utils import import_str
         from nr3d_lib.config import ConfigDict
         from app.resources import create_scene_bank
-        from dataio.dataloader import SceneDataLoader
+        from dataio.data_loader import SceneDataLoader
         
         dataset_cfg = ConfigDict(
             target='dataio.autonomous_driving.CustomAutoDriveDataset', 
@@ -513,11 +577,10 @@ if __name__ == "__main__":
             ), 
             no_objects=False, 
             align_orientation=False, 
-            aabb_extend=120., 
             camera_front_name='camera_sv_front', 
             camera_model='fisheye'
         )
-        dataset_impl: DatasetIO = import_str(dataset_cfg.target)(dataset_cfg.param)
+        dataset_impl: SceneDataset = import_str(dataset_cfg.target)(dataset_cfg.param)
         scene_bank, _ = create_scene_bank(
             dataset=dataset_impl, device=device, 
             scenebank_root=None,
@@ -547,6 +610,9 @@ if __name__ == "__main__":
                     )
                 )
             ))
-        scene.debug_vis_anim(scene_dataloader=scene_dataloader, plot_lidar=True)
+        scene.debug_vis_anim(
+            scene_dataloader=scene_dataloader, 
+            plot_image=True, camera_length=0.6, 
+            plot_lidar=True, lidar_pts_downsample=4)
     test_scenario()
     # test_distort()

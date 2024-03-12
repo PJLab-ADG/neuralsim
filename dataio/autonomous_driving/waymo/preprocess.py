@@ -38,6 +38,7 @@ def process_single_sequence(
     # Other configs
     class_names: List[str] = WAYMO_CLASSES, 
     should_offset_pos=True,
+    should_offset_timestamp=True, 
     should_process_gt=True,
     ignore_existing=False, 
     ):
@@ -103,16 +104,18 @@ def process_single_sequence(
             # world_offset = c2w00[:3, 3]
             
             #---- OPTION2: Use the vehicle's 0-th pose as offset (for waymo, the same with OPTION1: waymo's frame.pose is exactly camera0's pose)
-            frame_pose0 = np.array(frame0.pose.transform, copy=True).reshape(4,4)
-            world_offset = frame_pose0[:3, 3]
+            frame0_pose = np.array(frame0.pose.transform, copy=True).reshape(4,4)
+            world_offset = frame0_pose[:3, 3]
+        timestamp_offset = 0
+        if should_offset_timestamp:
+            timestamp_offset = frame0.timestamp_micros / 1e6
 
-        scene_metas = dict(world_offset=world_offset)
+        frame_timestamps = []
 
         #------------------------------------------------------
         #--------    Dynamic object statistics     ------------
         #------------------------------------------------------
         dynamic_stats = stat_dynamic_objects(dataset)
-        scene_metas['dynamic_stats'] = dynamic_stats
 
         # NOTE: Not used.
         # frame_inds_with_panoptic_label = []
@@ -129,6 +132,9 @@ def process_single_sequence(
             frame_pose = np.array(frame.pose.transform, copy=True).reshape(4,4)
             frame_pose[:3, 3] -= world_offset
             frame_timestamp = frame.timestamp_micros / 1e6
+            if should_offset_timestamp:
+                frame_timestamp -= timestamp_offset
+            frame_timestamps.append(frame_timestamp)
 
             #------------------------------------------------------
             #--------------     Frame Observers      --------------
@@ -136,11 +142,11 @@ def process_single_sequence(
             if 'ego_car' not in scene_observers:
                 scene_observers['ego_car'] = dict(
                     class_name='EgoVehicle', n_frames=0, 
-                    data=dict(v2w=[], timestamp=[], global_frame_ind=[]))
+                    data=dict(v2w=[], global_timestamps=[], global_frame_inds=[]))
             scene_observers['ego_car']['n_frames'] += 1
             scene_observers['ego_car']['data']['v2w'].append(frame_pose)
-            scene_observers['ego_car']['data']['timestamp'].append(frame_timestamp)
-            scene_observers['ego_car']['data']['global_frame_ind'].append(frame_ind)
+            scene_observers['ego_car']['data']['global_timestamps'].append(frame_timestamp)
+            scene_observers['ego_car']['data']['global_frame_inds'].append(frame_ind)
 
             #------------------------------------------------------
             #------------------     Cameras      ------------------
@@ -156,8 +162,11 @@ def process_single_sequence(
                 assert c.name == camera.name == (j+1)
                 str_id = idx_to_camera_id(_j)
                 
-                h = c.height
-                w = c.width
+                camera_timestamp = camera.pose_timestamp
+                if should_offset_timestamp:
+                    camera_timestamp -= timestamp_offset
+                
+                h, w = c.height, c.width
                 
                 # fx, fy, cx, cy, k1, k2, p1, p2, k3
                 fx, fy, cx, cy, *distortion = np.array(c.intrinsic)
@@ -200,17 +209,18 @@ def process_single_sequence(
                 if str_id not in scene_observers:
                     scene_observers[str_id] = dict(
                         class_name='Camera', n_frames=0, 
-                        data=dict(hw=[], intr=[], distortion=[], c2v_0=[], c2v=[], sensor_v2w=[], c2w=[], timestamp=[], global_frame_ind=[]))
+                        data=dict(hw=[], intr=[], distortion=[], c2v_0=[], c2v=[], sensor_v2w=[], c2w=[], 
+                                  global_timestamps=[], global_frame_inds=[]))
                 scene_observers[str_id]['n_frames'] += 1
                 scene_observers[str_id]['data']['hw'].append((h,w))
                 scene_observers[str_id]['data']['intr'].append(intr)
                 scene_observers[str_id]['data']['distortion'].append(distortion)
                 scene_observers[str_id]['data']['c2v_0'].append(c2v)
                 scene_observers[str_id]['data']['c2v'].append(c2v @ opencv_to_waymo)
-                scene_observers[str_id]['data']['sensor_v2w'].append(v2w)
+                scene_observers[str_id]['data']['sensor_v2w'].append(v2w) # v2w at each camera's timestamp
                 scene_observers[str_id]['data']['c2w'].append(c2w)
-                scene_observers[str_id]['data']['timestamp'].append(camera.pose_timestamp)
-                scene_observers[str_id]['data']['global_frame_ind'].append(frame_ind)
+                scene_observers[str_id]['data']['global_timestamps'].append(camera_timestamp)
+                scene_observers[str_id]['data']['global_frame_inds'].append(frame_ind)
 
                 #-------- Process observation groundtruths
                 if should_process_gt and rgb_dir:
@@ -237,6 +247,13 @@ def process_single_sequence(
                 laser = frame.lasers[j]
                 assert c.name == laser.name == (j+1)
                 str_id = idx_to_lidar_id(j)
+                
+                # NOTE: Waymo assumes LiDARs are all captured at frame timestamp.
+                #       The rolling shutter effect of TOP LiDAR is compensated by \
+                #           the per-beam ego pose `laser_return.range_image_pose_compressed`, 
+                #           which is processed below.
+                lidar_timestamp = frame_timestamp
+                
                 # Waymo: extrinsic=[lidar to vehicle]
                 extrinsic = np.reshape(np.array(c.extrinsic.transform), [4, 4])
                 l2w = frame_pose @ extrinsic
@@ -244,13 +261,13 @@ def process_single_sequence(
                 if str_id not in scene_observers:
                     scene_observers[str_id] = dict(
                         class_name='RaysLidar', n_frames=0, 
-                        data=dict(l2v=[], l2w=[], timestamp=[], global_frame_ind=[]))
+                        data=dict(l2v=[], l2w=[], global_timestamps=[], global_frame_inds=[]))
                 scene_observers[str_id]['n_frames'] += 1
                 scene_observers[str_id]['data']['l2v'].append(extrinsic)
                 scene_observers[str_id]['data']['l2w'].append(l2w)
                 # scene_observers[str_id]['data']['sensor_v2w'].append(frame_pose)
-                scene_observers[str_id]['data']['timestamp'].append(frame_timestamp)
-                scene_observers[str_id]['data']['global_frame_ind'].append(frame_ind)
+                scene_observers[str_id]['data']['global_timestamps'].append(lidar_timestamp)
+                scene_observers[str_id]['data']['global_frame_inds'].append(frame_ind)
                 
                 if should_process_gt and (lidar_dir or pcl_dir):
                     if ri_index == 0:
@@ -441,7 +458,7 @@ def process_single_sequence(
                     [[frame_ind, frame_timestamp], [pose, dimension]]
                 )
 
-        scene_metas['n_frames'] = frame_ind + 1
+        n_global_frames = frame_ind + 1
 
         #--------------- Per-observer processing
         for oid, odict in scene_observers.items():
@@ -463,14 +480,16 @@ def process_single_sequence(
                     cur_seg_data = dict(
                         transform=[],
                         scale=[],
-                        timestamp=[],
-                        global_frame_ind=[]
+                        global_timestamps=[],
+                        global_frame_inds=[]
                     )
 
+                # NOTE: Waymo assumes all annotations are captured at frame timestamp.
+                cur_seg_data['global_timestamps'].append(frame_timestamp)
+                
                 cur_seg_data['transform'].append(pose)
                 cur_seg_data['scale'].append(dimension)
-                cur_seg_data['timestamp'].append(frame_timestamp)
-                cur_seg_data['global_frame_ind'].append(frame_ind)
+                cur_seg_data['global_frame_inds'].append(frame_ind)
                 
                 if (i == len(obj_annos)-1) or (obj_annos[i+1][0][0] - frame_ind != 1):
                     #----------------- Process last segment
@@ -480,11 +499,18 @@ def process_single_sequence(
                     cur_segment['data'] = cur_seg_data
                     segments.append(cur_segment)
             
+            odict['n_full_frames'] = n_global_frames
             odict['segments'] = segments
 
         scenario = dict()
         scenario['scene_id'] = scene_id
-        scenario['metas'] = scene_metas
+        scenario['metas'] = {
+            'n_frames': n_global_frames, 
+            'world_offset': world_offset, 
+            'timestamp_offset': timestamp_offset, 
+            'frame_timestamps': np.array(frame_timestamps), 
+            'dynamic_stats': dynamic_stats, 
+        }
         scenario['objects'] = scene_objects
         scenario['observers'] = scene_observers
         
@@ -538,8 +564,7 @@ def create_dataset(
 if __name__ == "__main__":
     """
     Usage:
-        cd neuralsim
-        python dataio/autonomous_driving/waymo/preprocess.py code_multi/configs/waymo/dataset.yaml --out /path/to/processed/dir -j8
+        python preprocess.py --root /path/to/waymo/training --out_root /path/to/processed --seq_list /path/to/xxx.lst -j8
     """
     import argparse
     

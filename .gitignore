@@ -21,6 +21,7 @@ dist/
 dbg_*/**
 
 pyrightconfig.json
+*.lprof
 
 search_*/
 bk_search_*/
@@ -28,3 +29,4 @@ bk_search_*/
 /code_single/configs/backups/
 
 /app/resources/observers/RisleyPrismCsvData/*.csv
+**/internal/

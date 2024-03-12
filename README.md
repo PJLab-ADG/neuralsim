@@ -23,76 +23,39 @@ This repository primarily addresses two topics:
   - [Installation](#installation)
   - [`code_single` Single scene](#code_single-single-scene)
   - [`code_multi` Multi-object scene](#code_multi-multi-object-scene)
-  - [`code_large` Large-scale scene](#code_large-large-scale-scene)
 - [Roadmap \& TODOs](#roadmap--todos)
 - [Acknowledgements \& citations](#acknowledgements--citations)
 
 ## Implicit surface is all you need !
 
 Single-object / multi-object / indoor / outdoor / large-scale surface reconstruction and multi-modal sensor simulation
-
-https://github.com/PJLab-ADG/neuralsim/assets/25529198/ce6ec6fc-2d0e-4c2b-9d91-d1b992d13ff4
-
-https://github.com/PJLab-ADG/neuralsim/assets/25529198/32d6fe6f-39a1-403d-8b12-16d26e092375
-
-https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0bc307d339f3
-
 |                                                              |                                                              |
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
 | :rocket: Object **surface reconstruction** in minutes !<br />Input: posed images <u>without mask</u><br />Get started: [neus_in_10_minutes](docs/methods/neus_in_10_minutes.md)<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/618ff7ab-d769-47c4-9c26-bc54674e0cb2" alt="teaser_training_bmvs_gundam" width="320"> | :rocket:  Outdoor **surface reconstruction** in minutes !<br />Input: posed images <u>without mask</u><br />Get started: [neus_in_10_minutes](docs/methods/neus_in_10_minutes.md)<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c216407-0c60-47ae-b1c1-f3ba66c67cc2" alt="teaser_training_bmvs_village_house" width="320"> |
 | :rocket: Indoor **surface reconstruction** in minutes !<br />Input: posed images, monocular cues<br />Get started: [neus_in_10_minutes#indoor](docs/methods/neus_in_10_minutes.md#indoor-datasets)<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/a8ab59a3-c6e2-464e-aeda-0684bf18dbb6" width="320"> | :car: Categorical **surface reconstruction** in the wild !<br />Input: multi-instance multi-view categorical images<br />[To be released 2023.09]<br />Credits: [Qiusheng Huang](https://github.com/huangqiusheng), [Jianfei Guo](https://github.com/ventusff), [Xinyang Li](https://github.com/imlixinyang)<br /><img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/b557570f-0f88-4c55-b46d-a6d5cf7f4e45" width="320"> |
 | :motorway: Street-view **surface reconstruction** in 2 hours !<br />Input: posed images, monocular cues (and optional LiDAR)<br />Get started: [streetsurf](docs/methods/streetsurf.md)<br />Credits: [Jianfei Guo](https://github.com/ventusff), [Nianchen Deng](https://github.com/dengnianchen) <br /> <video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7ddfe845-013c-479a-81a6-066bd04cf97c"></video>(Refresh if video won't play) | :motorway: Street-view multi-modal **sensor simulation** ! <br />Using reconstructed asset-bank<br />Get started: [streetsurf#lidarsim](docs/methods/streetsurf.md#lidar-simulation)<br />Credits: [Jianfei Guo](https://github.com/ventusff), [Xinyu Cai](https://github.com/HueyTsai), [Nianchen Deng](https://github.com/dengnianchen) <br/> <video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/fa6e37e1-48eb-434a-89e8-9b1c230ce50d"></video>(Refresh if video won't play) |
-| :motorway: Street-view multi-object **surfaces reconstruction** in hours !<br />Input: posed images, LiDAR, 3D tracklets<br />[To be released 2023.09]<br />Credits: [Jianfei Guo](https://github.com/ventusff), [Nianchen Deng](https://github.com/dengnianchen)<br /><video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/e2f0b02e-86f0-4c06-85ce-58980e6bbf96"></video>(Refresh if video won't play) | :motorway: Street-view **scenario editing** !<br />Using reconstructed asset-bank<br/>[To be released 2023.09] <br/>Credits: [Jianfei Guo](https://github.com/ventusff), [Nianchen Deng](https://github.com/dengnianchen) <video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/c130ab03-7b8a-4068-8c2f-9c5bea219e6d"></video>(Refresh if video won't play) |
-| :cityscape: Large-scale multi-view surface reconstruction ... (WIP) | :motorway: Street-view light editing ... (WIP)               |
-
-## Ecosystem
-
-```mermaid
-%%{init: {'theme': 'neutral', "flowchart" : { "curve" : "basis" } } }%%
-graph LR;
-    0("fa:fa-wrench <b>Basic models & operators</b><br/>(e.g. LoTD & pack_ops)<br/><a href='https://github.com/pjlab-ADG/nr3d_lib' target='_blank'>nr3d_lib</a>")
-    A("fa:fa-road <b>Single scene</b><br/>[paper] StreetSurf<br/>[repo] <a href='https://github.com/pjlab-ADG/neuralsim' target='_blank'>neuralsim</a>/code_single")
-    B("fa:fa-car <b>Categorical objects</b><br/>[paper] CatRecon<br/>[repo] <a href='https://github.com/pjlab-ADG/neuralgen' target='_blank'>neuralgen</a>")
-    C("fa:fa-globe <b>Large scale scene</b><br/>[repo] neuralsim/code_large<br/>[release date] Sept. 2023")
-    D("fa:fa-sitemap <b>Multi-object scene</b><br/>[repo] neuralsim/code_multi<br/>[release date] Sept. 2023")
-    B --> D
-    A --> D
-    A --> C
-    C --> D
-```
-
-Pull requests and collaborations are warmly welcomed :hugs:! Please follow our code style if you want to make any contribution.
-
-Feel free to open an issue or contact [Jianfei Guo](https://github.com/ventusff) (guojianfei@pjlab.org.cn)  or [Nianchen Deng](https://github.com/dengnianchen) (dengnianchen@pjlab.org.cn) if you have any questions or proposals.
+| :motorway: Street-view multi-object **surfaces reconstruction** in hours !<br />Input: posed images, LiDAR, 3D tracklets<br />Get started: <br />Credits: [Jianfei Guo](https://github.com/ventusff), [Nianchen Deng](https://github.com/dengnianchen)<br /><video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/e2f0b02e-86f0-4c06-85ce-58980e6bbf96"></video>(Refresh if video won't play) | :motorway: Street-view multi-**dynamic**-object **surfaces reconstruction** in hours !<br />:rocket: Support dynamic **pedestrians, cyclists**, etc.<br />Credits: [Jianfei Guo](https://github.com/ventusff)<br /><video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/dbd7854e-a9db-48be-a23c-61e3592f8faf"></video>(Refresh if video won't play) |
+| :motorway: Street-view **scenario editing** !<br />Using reconstructed asset-bank<br/>Credits: [Jianfei Guo](https://github.com/ventusff), [Nianchen Deng](https://github.com/dengnianchen) <video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/c130ab03-7b8a-4068-8c2f-9c5bea219e6d"></video>(Refresh if video won't play) | :motorway: Street-view light editing ... (WIP)               |
 
 ### Highlighted implementations
 
 | Methods                                                      | :rocket: Get started | Official / Un-official                       | Notes, major difference from paper, etc.                     |
 | ------------------------------------------------------------ | --------------------- | -------------------------------------------- | ------------------------------------------------------------ |
 | [StreetSurf](https://ventusff.github.io/streetsurf_web/)     | [readme](docs/methods/streetsurf.md) | Official                                     | - LiDAR loss improved     |
+| NeuralSim | readme | Official | - support foreground categories: vehicles, pedestrians, cyclists, etc.<br />- support arbitrary unannotated dynamic objects<br />- support decomposition of camera lens dirt, lens flares, etc. |
 | [NeuS](https://lingjie0206.github.io/papers/NeuS/) in minutes | [readme](docs/methods/neus_in_10_minutes.md) | Un-official                                  | - support object-centric datasets as well as <u>indoor</u> datasets<br />- fast and stable convergence without needing mask<br />- support using [NGP](https://github.com/NVlabs/instant-ngp) / [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-) or MLPs as fg&bg representations<br />- large pixel batch size (4096) & pixel error maps |
 | [NGP](https://github.com/NVlabs/instant-ngp) with LiDAR      | [readme](docs/methods/ngp_lidar.md) | Un-official                                  | - using [Urban-NeRF](https://urban-radiance-fields.github.io/)'s LiDAR loss |
-| Multi-object reconstruction with [unisim](https://waabi.ai/unisim/)'s CNN decoder | [WIP] | Un-official<br />:warning: Largely different | - :warning: only the CNN decoder part is similar to [unisim](https://waabi.ai/unisim/) <br />- volumetric ray buffer mering, instead of feature grid spatial merging<br />- our version of foreground hypernetworks and background model [StreetSurf](https://ventusff.github.io/streetsurf_web/) (the details of theirs are not released up to now) |
+
+## Updates
+
+
+
 
 ## Highlights
 
 ### :hammer_and_wrench: Multi-object volume rendering
 
-Code: [app/renderers/general_volume_renderer.py](app/renderers/general_volume_renderer.py)
-
-#### > Efficient and universal
-
-We provide a universal implementation of multi-object volume rendering that supports any kind of methods built for volume rendering, as long as a model can be queried with rays and can output `opacity_alpha`, depth samples `t`, and other optional fields like `rgb`, `nablas`, `features`, etc.
-
-This renderer is efficient mainly due to:
-
-- Frustum culling
-- Occupancy-grid-based single / batched ray marching and pack merging implemented with [pack_ops](https://github.com/pjlab-ADG/nr3d_lib#pushpin-pack_ops-pack-wise-operations-for-packed-tensors-)
-- (optional) Batched / indiced inference of [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-)
-
-The figure below depicts the idea of the whole rendering process.
-
-![multi_object_volume_render](media/multi_object_volume_render.png)
+Code: [app/renderers/buffer_compose_renderer.py](app/renderers/buffer_compose_renderer.py)
 
 #### > Scene graph structure
 
@@ -107,6 +70,65 @@ Any entity that possesses a pose or position is considered a node. Certain nodes
 | Real-data scene graph                          | Real-data frustum culling                              |
 | ---------------------------------------------- | ------------------------------------------------------ |
 | ![vis_scene_graph](media/vis_scene_graph.jpeg) | ![vis_frustum_culling](media/vis_frustum_culling.jpeg) |
+
+#### > Efficient and universal
+
+We provide a universal implementation of multi-object volume rendering that supports any kind of methods built for volume rendering, as long as a model can be queried with rays and can output `opacity_alpha`, depth samples `t`, and other optional fields like `rgb`, `nablas`, `features`, etc.
+
+This renderer is efficient mainly due to:
+
+- Frustum culling
+- Occupancy-grid-based single / batched ray marching and pack merging implemented with [pack_ops](https://github.com/pjlab-ADG/nr3d_lib#pushpin-pack_ops-pack-wise-operations-for-packed-tensors-)
+- (optional) Batched / indiced inference of [LoTD](https://github.com/pjlab-ADG/nr3d_lib#pushpin-lotd-levels-of-tensorial-decomposition-)
+
+The figure below depicts the idea of the whole rendering process.
+
+We ray-march every model first, then sort the samples with different model sources on each ray to jointly volume render multiple objects.
+
+![multi_object_volume_render](media/multi_object_volume_render.png)
+
+### > Support dynamic (non-rigid) categories and allow un-annotated dynamics
+
+We also support efficient neural surface reconstruction for pedestrians, cyclists and other dynamic / non-rigid categories.
+
+
+
+- Representation:
+  - For static background, we use StreetSurf / Block-StreetSurf (WIP).
+  - For categorical foreground objects (Vehicle, Pedestrian, Cyclists)
+    - For all categorical foreground objects, we use shared NeuS-based representation with permutohedral-lattice-based hash-encodings, which are much faster and more friendly to higher dimensional inputs.
+      See in [[generative_permuto_neus.py]](https://github.com/PJLab-ADG/nr3d_lib/blob/main/nr3d_lib/models/fields_conditional/neus/generative_permuto_neus.py)
+    - (Rigid) Vehicles: We use shared NeuS models with position (3D) + instance latent (1~4D) as input
+    - (Non-rigid / dynamic) Pedestrians and Cyclists: We use position (3D) + temporal embedding (1D) + instance latent (1~4D) as input.
+  - For un-annotated objects (A dog walking by, waving flags, plastic bags...), we use EmerNeRF (only the dynamic part)
+    See in [[emernerf.py]](https://github.com/PJLab-ADG/nr3d_lib/blob/main/nr3d_lib/models/fields_dynamic/nerf/emernerf.py)
+  - For camera effects (lens flares, dirt or rain drop on lens), we use a separate layer of learned offset image for per-cam per-frame images.
+- Raymarching:
+  - Along with the multi-stage occ-grid-based raymarching strategy in the background object (StreetSurf), we also accumulate multi-instance (and multi-frame) occupancy grids for foreground objects to accelerate the raymarching process of foreground objects.
+  - See in [[here]](https://github.com/PJLab-ADG/nr3d_lib/tree/main/nr3d_lib/models/accelerations/occgrid_accel): We have implemented multi-instance (batched) / multi-time (dynamic) / batched & dynamic occupancy grid marching. 
+- Framework
+  - See in [[scene.py]](app/resources/scenes.py): We have implemented two ways for freezing a scene graph at a specific time (or multiple batched time). You can either use the frame-indexing mode, in which the scene graph is frozen at one or multiple frame indices, or you can use the timestamp-interpolation mode, in which the scene graph is frozen at one or multiple timestamps. Both modes support feeding per-ray timestamps to the network.
+
+
+| Multi-frame occ. grids<br />accumulated in training | Multi-instance occ. grids<br />accumulated in training |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| ![occ_grid_batched](media/occ_grid_batched.jpg)     | ![occ_grid_dynamic](media/occ_grid_dynamic.jpg)        |
+
+| Multi-instance & multi-frame occupancy grids accumulated in training |
+| ------------------------------------------------------------ |
+| x-axis for different instances of pedestrians<br />y-axis for different timestamps for one pedestrian<br />![occ_grid_batched_dynamic](media/occ_grid_batched_dynamic.jpg) |
+
+### Robust reconstruction in the wild
+
+#### > Pose estimation for ego motion and other objects
+
+Accomplished by the `Attribute` implementation in [[nr3d_lib/attributes]](https://github.com/PJLab-ADG/nr3d_lib/tree/main/nr3d_lib/models/attributes)
+
+#### > Camera effect disentanglement
+
+| Lens flare                                                   | Lens dirt / raindrop                                         |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| [<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/c626b905-e50b-4977-830a-83f255a12cac" alt="lens_flare_9385013" width="640">](https://github.com/PJLab-ADG/neuralsim/assets/25529198/5e88aed0-d271-4d63-bfea-08e700cd8047) | [<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/91cd9908-9a14-4766-8b5a-983d55ba671b" alt="lens_dirt_1009661" width="640">](https://github.com/PJLab-ADG/neuralsim/assets/25529198/62d10c4a-e8c1-4c22-be79-ca5622d6e0f1) |
 
 ### :bank: Editable assetbank
 
@@ -163,19 +185,22 @@ Please refer to [code_single/README.md](code_single/README.md)
 
 ### `code_multi` Multi-object scene
 
-(WIP)
+- Different categories of foreground objects & background objects, joint rendering and decomposed reconstruction
+- Generic unsupervised dynamic / static decomposition
 
-### `code_large` Large-scale scene
-
-(WIP)
+Please refer to [code_multi/README.md](code_multi/README.md)
 
 ## Roadmap & TODOs
 
 - [ ] Unofficial implementation of unisim
-- [ ] Release our methods on multi-object reconstruction for autonomous driving
-- [ ] Release our methods on large-scale representation and neus
+- [x] Release our methods on multi-object reconstruction for autonomous driving
+- [x] Release our methods on large-scale representation and neus
 - [ ] Factorization of embient light and object textures
-- [ ] Dataloaders for more autonomous driving datasets (KITTI, NuScenes, Waymo v2.0, ZOD, PandarSet)
+- [x] Dataloaders for more autonomous driving datasets (KITTI, NuScenes, Waymo v2.0, ZOD, PandarSet)
+
+Pull requests and collaborations are warmly welcomed :hugs:! Please follow our code style if you want to make any contribution.
+
+Feel free to open an issue or contact [Jianfei Guo](https://github.com/ventusff) (ffventus@gmail.com)  or [Nianchen Deng](https://github.com/dengnianchen) (dengnianchen@pjlab.org.cn) if you have any questions or proposals.
 
 ## Acknowledgements & citations
 
@@ -192,6 +217,7 @@ Please refer to [code_single/README.md](code_single/README.md)
 }
 ```
 
+- [WIP] Our paper on multi-object reconstruction & re-simulation
 - [NeuS](https://lingjie0206.github.io/papers/NeuS/)   Most of our methods are derived from NeuS
 
 ```bibtex

@@ -22,6 +22,7 @@ import imageio
 import numpy as np
 from tqdm import tqdm
 from math import prod
+# import matplotlib.pyplot as plt
 
 import torch
 
@@ -29,11 +30,11 @@ from nr3d_lib.fmt import log
 from nr3d_lib.plot import color_depth
 from nr3d_lib.checkpoint import sorted_ckpts
 from nr3d_lib.config import ConfigDict, BaseConfig
-from nr3d_lib.utils import cond_mkdir, import_str
-from nr3d_lib.render.utils import PSNR, SSIM
+from nr3d_lib.utils import cond_mkdir, import_str, pad_images_to_same_size
+from nr3d_lib.graphics.utils import PSNR, SSIM, LPIPS
 
 from nr3d_lib.models.spatial import AABBSpace
-from nr3d_lib.models.spatial_accel import OccupancyGridAS
+from nr3d_lib.models.accelerations.occgrid_accel import OccGridAccel
 from nr3d_lib.models.loss.safe import safe_binary_cross_entropy
 
 
@@ -41,17 +42,17 @@ from app.resources.observers import Camera
 from app.renderers import SingleVolumeRenderer
 from app.resources import Scene, AssetBank, create_scene_bank, load_scene_bank
 
-from dataio.dataloader import SceneDataLoader
+from dataio.data_loader import SceneDataLoader
 
 def main_function(args: ConfigDict):
     exp_dir = args.exp_dir
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     dtype = torch.float32
 
     #---------------------------------------------
     #--------------     Load     -----------------
     #---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     # Automatically load 'final_xxx.pt' or 'latest.pt'
     ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
     log.info("=> Use ckpt:" + str(ckpt_file))
@@ -66,9 +67,8 @@ def main_function(args: ConfigDict):
     #-----------     Asset Bank     --------------
     #---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank_trainval, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank_trainval, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     #---------------------------------------------
     #---  Test - Scene Bank Dataset & Loader  ----
@@ -113,8 +113,8 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     scene = scene_bank_test[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
 
     # Fallsback to regular Mat4x4 for convenience
     # TODO
@@ -127,7 +127,8 @@ def main_function(args: ConfigDict):
     renderer.eval()
     asset_bank.eval()
     renderer.config.rayschunk = args.rayschunk
-    renderer.config.with_normal = True
+    with_normal = renderer.config.get('with_normal', False)
+    with_flow = renderer.config.get('with_flow', False)
     if args.depth_max is None:
         depth_max = renderer.config.far
     else:
@@ -165,37 +166,49 @@ def main_function(args: ConfigDict):
                 log.info(f"Video saved to {uri}")
             else:
                 if ".mp4" in uri:
-                    uri = f"{os.path.splitext(uri)[0]}.png"
+                    uri = f"{os.path.splitext(uri)[0]}.jpg"
                 imageio.imwrite(uri, frames[0], **kwargs)
                 log.info(f"Image saved to {uri}")
     
-    collate_keys = ['rgb_gt', 'rgb_volume', 'depth_volume', 'normals_volume']
+    collate_keys = ['rgb_gt', 'rgb_volume', 'depth_volume']
+    if with_normal:
+        collate_keys.extend(['normals_volume'])
+    if with_flow:
+        collate_keys.extend(['flow_fwd', 'flow_bwd'])
     all_gather = dict()
     for cam_id in cam_id_list:
         all_gather[cam_id] = dict({k: [] for k in collate_keys})
 
-    # Test correct.
-    ground_truth = scene_dataloader.get_rgb_gts(scene.id, cam_id_list[0], 0)
+    # One-time test correct.
+    ground_truth = scene_dataloader.get_image_and_gts(scene.id, cam_id_list[0], 0)
+    W, H = ground_truth['image_wh'].long().tolist()
+    LPIPS(torch.rand([H,W,3], dtype=torch.float, device=device), torch.rand([H,W,3], dtype=torch.float, device=device))
     # Collect rgb eval scores
     all_mask_metric = dict()
     all_fg_psnr_only_in_mask = dict()
     all_fg_psnr = dict()
     all_fg_ssim_only_in_mask = dict()
     all_fg_ssim = dict()
+    all_fg_lpips = dict()
     all_bg_psnr = dict()
     all_bg_ssim = dict()
+    all_bg_lpips = dict()
     all_full_psnr = dict()
     all_full_ssim = dict()
+    all_full_lpips = dict()
     for cam_id in cam_id_list:
         all_mask_metric[cam_id] = []
         all_fg_psnr_only_in_mask[cam_id] = []
         all_fg_psnr[cam_id] = []
         all_fg_ssim_only_in_mask[cam_id] = []
         all_fg_ssim[cam_id] = []
+        all_fg_lpips[cam_id] = []
         all_bg_psnr[cam_id] = []
         all_bg_ssim[cam_id] = []
+        all_bg_lpips[cam_id] = []
         all_full_psnr[cam_id] = []
         all_full_ssim[cam_id] = []
+        all_full_lpips[cam_id] = []
 
     with torch.no_grad():
         # for scene in scene_bank:
@@ -205,13 +218,22 @@ def main_function(args: ConfigDict):
         if args.forward_inv_s is not None:
             model.ray_query_cfg.forward_inv_s = args.forward_inv_s
 
-        log.info(f"Start [eval], ds={args.downscale}, in {exp_dir}")
-        for frame_ind in tqdm(range(args.start_frame, args.stop_frame or len(scene), 1), "rendering frames..."):
+        # NOTE: Optionally, render with render_parallel (multi-GPU rendering and buffer merging, similar to DataParallel)
+        if (eval_parallel_devices:=args.get('eval_parallel_devices', None)) is not None:
+            renderer.make_eval_parallel(asset_bank, devices=eval_parallel_devices)
 
-            scene.frozen_at(frame_ind)
+        log.info(f"Start [eval], ds={args.downscale}, parallel={eval_parallel_devices}, in {exp_dir}")
+        for frame_ind in tqdm(range(args.start_frame, args.stop_frame or len(scene), 1), "rendering frames..."):
+            # NOTE: Assume all sensors have the same frame length, which is also len(scene)
             
             for cam_id in cam_id_list:
                 cam: Camera = scene.observers[cam_id]
+                
+                if scene.use_ts_interp:
+                    cam_ts = cam.frame_global_ts[frame_ind]
+                    scene.interp_at(cam_ts)
+                else:
+                    scene.slice_at(frame_ind)
                 cam.intr.set_downscale(args.downscale)
                 
                 cur_frame_dict = dict({k: [] for k in collate_keys})
@@ -219,31 +241,42 @@ def main_function(args: ConfigDict):
                 ret = renderer.render(
                     scene, observer=cam, 
                     show_progress=args.progress, with_env=not args.no_sky, 
-                    render_per_obj=True, render_per_obj_in_total=True)
+                    render_per_obj_individual=True, render_per_obj_in_scene=True)
                 rendered = ret['rendered']
-                main_rendered_in_total = ret['rendered_per_obj_in_total'][obj.id]
+                main_rendered = ret['rendered_per_obj'][obj.id]
+                main_rendered_in_scene = ret['rendered_per_obj_in_scene'][obj.id]
                 #-----------------------------------------------
                 
                 def to_img(tensor):
                     return tensor.reshape([cam.intr.H, cam.intr.W, -1]).data.cpu().numpy()
 
-                rgb_volume = (to_img(rendered['rgb_volume'])*255).clip(0,255).astype(np.uint8)
-                
-                ground_truth = scene_dataloader.get_rgb_gts(scene.id, cam.id, frame_ind)
-                rgb_gt = (to_img(ground_truth['rgb'])*255).clip(0,255).astype(np.uint8)
+                #-----------------------------------------------
+                # GT
+                ground_truth = scene_dataloader.get_image_and_gts(scene.id, cam.id, frame_ind)
+                rgb_gt = (to_img(ground_truth['image_rgb'])*255).clip(0,255).astype(np.uint8)
                 cur_frame_dict['rgb_gt'] = rgb_gt
+
+                #-----------------------------------------------
+                # RGB
+                rgb_volume = (to_img(rendered['rgb_volume'])*255).clip(0,255).astype(np.uint8)
+                cur_frame_dict['rgb_volume'] = rgb_volume
+
+                #-----------------------------------------------
+                # RGB metrics
                 eval_rgb_pred = rendered['rgb_volume'].view(cam.intr.H, cam.intr.W, -1)
-                eval_rgb_gt = ground_truth['rgb'].to(device).view(eval_rgb_pred.shape)
+                eval_rgb_gt = ground_truth['image_rgb'].to(device).view(eval_rgb_pred.shape)
                 
                 full_psnr = PSNR(eval_rgb_pred, eval_rgb_gt).item()
                 full_ssim = SSIM(eval_rgb_pred, eval_rgb_gt).item()
+                full_lpips = LPIPS(eval_rgb_pred, eval_rgb_gt).item()
                 all_full_psnr[cam_id].append(full_psnr)
                 all_full_ssim[cam_id].append(full_ssim)
+                all_full_lpips[cam_id].append(full_lpips)
                 
-                if 'rgb_mask' in ground_truth:
+                if 'image_occupancy_mask' in ground_truth:
                     # NOTE: If there is a ground truth mask, we can seperately evaluate fg & bg
                     eval_rgb_mask_pred = rendered['mask_volume'].view(cam.intr.H, cam.intr.W, 1)
-                    eval_rgb_mask_gt = ground_truth['rgb_mask'].to(device).view(*eval_rgb_mask_pred.shape)
+                    eval_rgb_mask_gt = ground_truth['image_occupancy_mask'].to(device).view(*eval_rgb_mask_pred.shape)
                     mean_bce = safe_binary_cross_entropy(eval_rgb_mask_pred, eval_rgb_mask_gt.float(), reduction='mean').item()
                     all_mask_metric[cam_id].append(mean_bce)
                     
@@ -253,10 +286,13 @@ def main_function(args: ConfigDict):
                     fg_psnr_only_in_mask = PSNR(fg_eval_pred, fg_eval_gt, eval_rgb_mask_gt, only_in_mask=True).item()
                     fg_ssim = SSIM(fg_eval_pred, fg_eval_gt, eval_rgb_mask_gt, only_in_mask=False).item()
                     fg_ssim_only_in_mask = SSIM(fg_eval_pred, fg_eval_gt, eval_rgb_mask_gt, only_in_mask=True).item()
+                    fg_lpips = LPIPS(fg_eval_pred, fg_eval_gt, eval_rgb_mask_gt).item()
+                    
                     all_fg_psnr[cam_id].append(fg_psnr)
                     all_fg_psnr_only_in_mask[cam_id].append(fg_psnr_only_in_mask)
                     all_fg_ssim[cam_id].append(fg_ssim)
                     all_fg_ssim_only_in_mask[cam_id].append(fg_ssim_only_in_mask)
+                    all_fg_lpips[cam_id].append(fg_lpips)
                     
                     non_occupied_mask = ~eval_rgb_mask_gt
                     # Decide bg_eval_gt
@@ -277,32 +313,48 @@ def main_function(args: ConfigDict):
                         bg_eval_pred = eval_rgb_pred * non_occupied_mask.view(*eval_rgb_pred.shape[:-1], 1)
                     bg_psnr = PSNR(bg_eval_pred, bg_eval_gt, non_occupied_mask).item()
                     bg_ssim = SSIM(bg_eval_pred, bg_eval_gt, non_occupied_mask).item()
+                    bg_lpips = LPIPS(bg_eval_pred, bg_eval_gt, non_occupied_mask).item()
 
                     all_bg_psnr[cam_id].append(bg_psnr)
                     all_bg_ssim[cam_id].append(bg_ssim)
+                    all_bg_lpips[cam_id].append(bg_lpips)
 
+                #-----------------------------------------------
+                # Mask and depth
                 if not args.with_distant_depth:
                     # Since distant depth is usally messy and in-accurate
-                    mask_volume = to_img(main_rendered_in_total['mask_volume'])
-                    depth_volume = to_img(main_rendered_in_total['depth_volume'])
+                    mask_volume = to_img(main_rendered_in_scene['mask_volume'])
+                    depth_volume = to_img(main_rendered_in_scene['depth_volume'])
                 else:
                     mask_volume = to_img(rendered['mask_volume'])
                     depth_volume = to_img(rendered['depth_volume'])
-                
                 depth_volume = mask_volume * np.clip(depth_volume/depth_max, 0, 1) + (1-mask_volume) * 1
                 depth_volume = color_depth(depth_volume.squeeze(-1), scale=1, cmap='turbo')    # turbo_r, viridis, rainbow
-                cur_frame_dict['rgb_volume'] = rgb_volume
                 cur_frame_dict['depth_volume'] = depth_volume
                 
+                #-----------------------------------------------
                 # Normals
-                if 'normals_volume' in rendered:
-                    if not args.with_distant_normal:
-                        normals_volume = to_img(main_rendered_in_total['normals_volume'])
-                    else:
-                        normals_volume = to_img(rendered['normals_volume'])
-                    normals_volume = ((normals_volume/2+0.5)*255).clip(0,255).astype(np.uint8)
-                    cur_frame_dict['normals_volume'] = normals_volume
+                if with_normal:
+                    if 'normals_volume' in cur_frame_dict:
+                        assert 'normals_volume' in rendered
+                        if not args.with_distant_normal:
+                            normals_volume = to_img(main_rendered_in_scene['normals_volume'])
+                        else:
+                            normals_volume = to_img(rendered['normals_volume'])
+                        normals_volume = ((normals_volume/2+0.5)*255).clip(0,255).astype(np.uint8)
+                        cur_frame_dict['normals_volume'] = normals_volume
                 
+                #-----------------------------------------------
+                # Flow
+                if with_flow:
+                    for k in ['flow_fwd', 'flow_fwd_pred_bwd', 'flow_bwd', 'flow_bwd_pred_fwd']:
+                        if k in cur_frame_dict: 
+                            print(k)
+                            assert k in main_rendered # main_rendered_in_scene
+                            val = to_img(main_rendered[k])
+                            val = ((val.clip(-0.5,0.5)+0.5) * 255.0).clip(0,255).astype(np.uint8)
+                            cur_frame_dict[k] = val
+                            
                 for k, v in cur_frame_dict.items():
                     all_gather[cam.id][k].append(v)
                     if args.save_perframe_camera:
@@ -310,7 +362,7 @@ def main_function(args: ConfigDict):
                         cond_mkdir(obs_dir)
                         k_dir = os.path.join(obs_dir, k)
                         cond_mkdir(k_dir)
-                        imageio.imwrite(os.path.join(k_dir, f"{frame_ind:08d}.png"), v)
+                        imageio.imwrite(os.path.join(k_dir, f"{frame_ind:08d}.jpg"), v)
 
     # Metrics
     #--------------- PSNR
@@ -328,7 +380,7 @@ def main_function(args: ConfigDict):
         total_fg_psnr_only_in_mask = None
         total_bg_psnr = None
     
-    psnr_f = os.path.join(vid_root, f'{name}.txt')
+    psnr_f = os.path.join(vid_root, f'{name}_psnr.txt')
     with open(psnr_f, 'w') as f:
         f.write(f"full: {total_full_psnr:.4f}\n")
         if total_fg_psnr is not None:
@@ -390,7 +442,7 @@ def main_function(args: ConfigDict):
         total_fg_ssim_only_in_mask = None
         total_bg_ssim = None
     
-    ssim_f = os.path.join(vid_root, f'{name}.txt')
+    ssim_f = os.path.join(vid_root, f'{name}_ssim.txt')
     with open(ssim_f, 'w') as f:
         f.write(f"full: {total_full_ssim:.4f}\n")
         if total_fg_ssim_only_in_mask is not None:
@@ -437,6 +489,54 @@ def main_function(args: ConfigDict):
     log.info(f"SSIM saved to {ssim_f}")
     
     
+    #--------------- LPIPS
+    total_full_lpips_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_full_lpips.items()}
+    total_full_lpips = np.array(list((total_full_lpips_per_cam.values()))).mean()
+    if len(next(iter(all_fg_lpips.values()))) > 0:
+        total_fg_lpips_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_fg_lpips.items()}
+        total_fg_lpips = np.array(list((total_fg_lpips_per_cam.values()))).mean()
+        total_bg_lpips_per_cam = {cam_id: np.array(vals).mean() for cam_id, vals in all_bg_lpips.items()}
+        total_bg_lpips = np.array(list((total_bg_lpips_per_cam.values()))).mean()
+    else:
+        total_fg_lpips = None
+        total_bg_lpips = None
+
+    lpips_f = os.path.join(vid_root, f'{name}_lpips.txt')
+    with open(lpips_f, 'w') as f:
+        f.write(f"full: {total_full_lpips:.4f}\n")
+        if total_fg_lpips is not None:
+            f.write(f"fg: {total_fg_lpips:.4f}\n")
+            f.write(f"bg: {total_bg_lpips:.4f}\n")
+        
+        if total_fg_lpips is not None:
+            f.write("fg".center(40, '=') + '\n')
+            for cam_id, vals in all_fg_lpips.items():
+                f.write(f"{cam_id}: {total_fg_lpips_per_cam[cam_id]:.4f}\n")
+            for cam_id, vals in all_fg_lpips.items():
+                f.write('='*40 + '\n')
+                f.write(f"{cam_id}: {total_fg_lpips_per_cam[cam_id]:.4f}\n")
+                f.writelines([f"{v:.4f}\n" for v in vals])
+                f.write("\n")
+
+            f.write("bg".center(40, '=') + '\n')
+            for cam_id, vals in all_bg_lpips.items():
+                f.write(f"{cam_id}: {total_bg_lpips_per_cam[cam_id]:.4f}\n")
+            for cam_id, vals in all_bg_lpips.items():
+                f.write('='*40 + '\n')
+                f.write(f"{cam_id}: {total_bg_lpips_per_cam[cam_id]:.4f}\n")
+                f.writelines([f"{v:.4f}\n" for v in vals])
+                f.write("\n")
+            
+            f.write("full".center(40, '=') + '\n')
+            for cam_id, vals in all_full_lpips.items():
+                f.write(f"{cam_id}: {total_full_lpips_per_cam[cam_id]:.4f}\n")
+            for cam_id, vals in all_full_lpips.items():
+                f.write('='*40 + '\n')
+                f.write(f"{cam_id}: {total_full_lpips_per_cam[cam_id]:.4f}\n")
+                f.writelines([f"{v:.4f}\n" for v in vals])
+                f.write("\n")
+    log.info(f"LPIPS saved to {lpips_f}")
+
     #--------------- MISC
     misc = {}
     misc['full_psnr'] = total_full_psnr
@@ -449,6 +549,11 @@ def main_function(args: ConfigDict):
     misc['fg_ssim_only_in_mask'] = total_fg_ssim_only_in_mask
     misc['bg_ssim'] = total_bg_ssim
     
+    misc['full_lpips'] = total_full_lpips
+    misc['fg_lpips'] = total_fg_lpips
+    misc['bg_lpips'] = total_bg_lpips
+    
+    
     total_mask_per_cam = {cam_id: (np.array(vals).mean() if len(vals) > 0 else 0) for cam_id, vals in all_mask_metric.items()}
     total_mask_metric = np.array(list((total_mask_per_cam.values()))).mean()
     misc['mask_metric'] = total_mask_metric
@@ -458,7 +563,7 @@ def main_function(args: ConfigDict):
         misc['aabb'] = aabb.tolist()
         volume = prod((aabb[1] - aabb[0]).tolist())
         misc['aabb_volume'] = volume
-        if isinstance((accel:=model.accel), OccupancyGridAS):
+        if isinstance((accel:=model.accel), OccGridAccel):
             misc['occ_ratio'] = accel.frac_occupied()
         
     misc_f = os.path.join(vid_root, f'{name}_misc.json')
@@ -472,8 +577,8 @@ def main_function(args: ConfigDict):
             for k, frames in obs_dict.items():
                 write_video(os.path.join(vid_root, f"{name}_{cam_id}_{k}.mp4"), frames)
 
-    #--------- 1 row collection
-    keys_1l = ['rgb_gt', 'rgb_volume', 'depth_volume', 'normals_volume']
+    #--------- All cams vertical concat
+    keys_1l = collate_keys
     frames_per_obs_1l_all = []
     for cam_id, obs_dict in all_gather.items():
         frames_per_obs_1l = []
@@ -489,22 +594,16 @@ def main_function(args: ConfigDict):
         frames_per_obs_1l_all = np.concatenate(frames_per_obs_1l_all, axis=1)
         write_video(os.path.join(vid_root, f"{name}_1l_all.mp4"), frames_per_obs_1l_all)
     
-    #--------- 3 cam concat
-    cam_id_list = ['camera_FRONT_LEFT', 'camera_FRONT', 'camera_FRONT_RIGHT'] # For waymo's three frontal cameras
-    if set(all_gather.keys()) == set(cam_id_list):
-        keys_1c = ['rgb_gt', 'rgb_volume', 'normals_volume', 'depth_volume']
-        frame_per_obs_1c_all = []
-        for cam_id in cam_id_list:
-            obs_dict = all_gather[cam_id]
-            frames_per_obs_1c = []
-            new_obs_dict = dict()
-            for k in keys_1c:
-                new_obs_dict[k] = obs_dict[k]
-            for kvs in zip(*(new_obs_dict.values())):
-                frames_per_obs_1c.append(np.concatenate(kvs, axis=0))
-            frame_per_obs_1c_all.append(np.array(frames_per_obs_1c))
-        frame_per_obs_1c_all = np.concatenate(frame_per_obs_1c_all, axis=2)
-        write_video(os.path.join(vid_root, f"{name}_1c_all.mp4"), frame_per_obs_1c_all)
+    #--------- All cams horizontal concat (from left to right, in the order specified by `cam_id_list`)
+    keys_1c = collate_keys
+    all_keys = []
+    for k in keys_1c:
+        all_frames_per_cam_this_k = [np.array(all_gather[cam_id][k]) for cam_id in cam_id_list]
+        all_frames_per_cam_this_k = pad_images_to_same_size(all_frames_per_cam_this_k, batched=True, padding='top_left') 
+        all_frames_this_k = np.concatenate(all_frames_per_cam_this_k, axis=2)
+        all_keys.append(all_frames_this_k)
+    all_keys = np.concatenate(all_keys, axis=1)
+    write_video(os.path.join(vid_root, f"{name}_1c_all.mp4"), all_keys)
     
 def make_parser():
     bc = BaseConfig()

@@ -42,9 +42,9 @@ class RoadNormalLoss(nn.Module):
         self.apply_in_pixel_train_step = apply_in_pixel_train_step
 
         if self.distant_mode == 'cr_only':
-            self.require_render_per_obj = True
+            self.requires_render_per_class = True
         else:
-            self.require_render_per_obj = False
+            self.requires_render_per_class = False
 
     def forward(self, scene: Scene, cam: Camera, ret: dict, sample: dict, ground_truth: dict, it: int):
         if it < self.enable_after:
@@ -55,7 +55,7 @@ class RoadNormalLoss(nn.Module):
         if self.distant_mode == 'crdv':
             rendered = ret['rendered']
         elif self.distant_mode == 'cr_only':
-            rendered = ret['rendered_per_obj_in_total']['street']
+            rendered = ret['rendered_per_obj_in_scene']['street']
         else:
             raise RuntimeError(f"Invalid distant_mode={self.distant_mode}")
         
@@ -63,8 +63,8 @@ class RoadNormalLoss(nn.Module):
         mask_pred = (rendered['mask_volume'].data > self.mask_pred_thresh) # detached
         
         #---- Road
-        assert 'rgb_road_mask' in ground_truth
-        road_mask = ground_truth['rgb_road_mask'].view(mask_pred.shape)
+        assert 'image_road_mask' in ground_truth
+        road_mask = ground_truth['image_road_mask'].view(mask_pred.shape)
         
         mask = mask_pred & road_mask
         if self.detach_mean:

@@ -30,8 +30,8 @@ from nr3d_lib.config import ConfigDict, BaseConfig
 
 from app.resources import create_scene_bank, load_scene_bank, AssetBank
 
-from dataio.dataset_io import DatasetIO
-from dataio.dataloader import SceneDataLoader
+from dataio.scene_dataset import SceneDataset
+from dataio.data_loader import SceneDataLoader
 
 device = torch.device('cuda')
 
@@ -75,8 +75,8 @@ def create_scene_loader(with_dynamic_objects=False, waymo_processed_root: str = 
         no_objects=no_objects,
         align_orientation=True, 
         consider_distortion=True, 
-        joint_camlidar=True,
-        joint_camlidar_equivalent_extr=True, 
+        scene_graph_has_ego_car=True,
+        correct_extr_for_timestamp_difference=True, 
     )
 
     dataset_cfg = ConfigDict(
@@ -88,7 +88,7 @@ def create_scene_loader(with_dynamic_objects=False, waymo_processed_root: str = 
             mask_dirname="masks", 
         )
     )
-    dataset_impl: DatasetIO = import_str(dataset_cfg.target)(dataset_cfg.param)
+    dataset_impl: SceneDataset = import_str(dataset_cfg.target)(dataset_cfg.param)
 
     scene_bank, scene_bank_meta = create_scene_bank(
         dataset=dataset_impl, device=device, 
@@ -144,13 +144,13 @@ def load_scene_from_pretrained(resume_dir: str):
     
     #---- Load assetbank
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank_trainval, load=state_dict['asset_bank'], device=device)
+    asset_bank.create_asset_bank(scene_bank_trainval, load_state_dict=state_dict['asset_bank'], device=device)
     
     #---- Load assets into scene
     for scene in scene_bank_trainval:
         scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
     
     #---- Create dataloader
     dataset_impl = import_str(args.dataset_cfg.target)(args.dataset_cfg.param)
@@ -208,7 +208,7 @@ def main_function():
     # NOTE: This will also update the scene_graph. 
     #       So all the nodes, including the sensors and ego_car / ego_drone is also frozen at the given frame,
     #       and each nodes' world_transform is automatically broadcasted from root to leaves.
-    scene.frozen_at(frame_ind)
+    scene.slice_at(frame_ind)
 
     #---- Get the sensor/observer
     lidar = scene.observers[lidar_id]
@@ -224,7 +224,7 @@ def main_function():
     # for fi in tqdm(range(len(scene)), 'Extracting lidar gt...'):
     #     lidar_gts = scene_dataloader.get_lidar_gts(
     #         scene.id, lidar.id, fi, device=device, filter_if_configured=True)
-    #     scene.frozen_at(fi)
+    #     scene.slice_at(fi)
     #     pts_local = torch.addcmul(lidar_gts['rays_o'], lidar_gts['rays_d'], lidar_gts['ranges'].unsqueeze(-1))
     #     pts = lidar.world_transform.forward(pts_local)
     #     pts_list.append(pts.data.cpu().numpy())

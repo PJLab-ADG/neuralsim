@@ -18,6 +18,7 @@ import json
 import pickle
 import numpy as np
 from glob import glob
+from copy import deepcopy
 from typing import Dict, List, Optional, Union, Tuple
 
 import torch
@@ -26,7 +27,7 @@ from nr3d_lib.config import ConfigDict
 from nr3d_lib.utils import IDListedDict, cond_mkdir
 
 from app.resources.scenes import Scene
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
 def parse_scene_bank_cfg(scenario_cfg_str: str) -> Tuple[str, Union[int,float], Union[int,float]]:
     # scene_id, start, stop
@@ -48,10 +49,10 @@ def filter_scene(dataset):
     raise NotImplementedError
 
 def get_dataset_scenario(
-    dataset: DatasetIO, scene_id: str, *, 
-    scenebank_cfg: ConfigDict) -> dict:
+    dataset: SceneDataset, scene_id: str, *, 
+    scenebank_cfg: dict) -> dict:
     
-    scenebank_cfg = scenebank_cfg.deepcopy()
+    scenebank_cfg = deepcopy(scenebank_cfg)
     scenarios = scenebank_cfg.pop('scenarios', None)
     for scenario_cfg_str in scenarios:
         _scene_id, start, stop = parse_scene_bank_cfg(scenario_cfg_str)
@@ -63,8 +64,8 @@ def get_dataset_scenario(
     raise RuntimeError(f"scene_id={scene_id} not in the given scenebank_cfg")
 
 def get_scenario(
-    dataset: DatasetIO, scene_id: str, *,
-    scenebank_cfg = ConfigDict(), # [scenarios, observers, objects, **], 
+    dataset: SceneDataset, scene_id: str, *,
+    scenebank_cfg = dict(), # [scenarios, observers, objects, **], 
     drawable_class_names: List[str] = [], 
     misc_node_class_names: List[str] = ['node', 'Ego', 'EgoVehicle', 'EgoDrone'],
     start=None, stop=None, 
@@ -75,7 +76,7 @@ def get_scenario(
         - Validity check: Ensures all nodes are used, either as drawable, misc, or observer.
         - Adds "non-existent" nodes/objects: distant-view, sky, etc.
     """
-    scenebank_cfg = scenebank_cfg.deepcopy()
+    scenebank_cfg = deepcopy(scenebank_cfg)
     scenebank_cfg.pop("scenarios", None)
     scenebank_cfg.update(start=start, stop=stop)
     scenebank_cfg.update(scenebank_cfg.pop("on_load", {}))
@@ -148,7 +149,7 @@ def get_scenario(
     
     return app_scenario
 
-def load_scene(scenario_or_path: Union[str, Dict], device=torch.device("cuda")) -> Scene:
+def load_scene(scenario_or_path: Union[str, Dict], device=None) -> Scene:
     scene = Scene(device=device)
     if isinstance(scenario_or_path, str):
         scene.load_from_scenario_file(scenario_or_path, device=device)
@@ -159,17 +160,17 @@ def load_scene(scenario_or_path: Union[str, Dict], device=torch.device("cuda")) 
     return scene
 
 def create_scene_bank(
-    dataset: DatasetIO, *, 
-    scenebank_cfg = ConfigDict(), # [scenarios, observers, on_load]
+    dataset: SceneDataset, *, 
+    scenebank_cfg = dict(), # [scenarios, observers, on_load]
     drawable_class_names: List[str] = [], 
     misc_node_class_names: List[str] = ['node', 'Ego', 'EgoVehicle', 'EgoDrone'], 
     scenebank_root: Optional[str] = None, # The directory to optionally save the created scene_bank
-    device=torch.device('cuda')) -> Tuple[IDListedDict[Scene], dict]:
+    device=None) -> Tuple[IDListedDict[Scene], dict]:
     
     scenario_list = []    
     scene_bank: IDListedDict[Scene] = IDListedDict()
     
-    scenebank_cfg = scenebank_cfg.deepcopy()
+    scenebank_cfg = deepcopy(scenebank_cfg)
     if (scenarios:=scenebank_cfg.pop('scenarios', None)) is None:
         scenarios = filter_scene(dataset)
     
@@ -205,7 +206,7 @@ def create_scene_bank(
         print(f"=> scene bank metadata saved to {scene_bank_meta_fpath}")
     return scene_bank, scenebank_meta
 
-def load_scene_bank(scenebank_root: str, device=torch.device("cuda")) -> Tuple[IDListedDict[Scene], dict]:
+def load_scene_bank(scenebank_root: str, device=None) -> Tuple[IDListedDict[Scene], dict]:
     scene_bank: IDListedDict[Scene] = IDListedDict()
     
     with open(os.path.join(scenebank_root, 'metadata.json'), 'r') as f:

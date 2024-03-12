@@ -17,6 +17,7 @@ from typing import Dict, List, Tuple, Union, Type
 
 import torch
 import torch.nn as nn
+from torch.optim import Optimizer
 from torch.utils import model_zoo
 
 from nr3d_lib.fmt import log
@@ -24,19 +25,23 @@ from nr3d_lib.logger import Logger
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.utils import IDListedDict, import_str, is_scalar
 
-from nr3d_lib.models.utils import get_param_group
-
 from app.resources.scenes import Scene, SceneNode
 
 class AssetBank(nn.ModuleDict):
-    def __init__(self, config: ConfigDict) -> None:
-        super().__init__()
-        self._param_groups: List[dict] = []
-        self._clip_grad_groups: List[dict] = []
+    def __init__(self, config: dict) -> None:
+        super().__init__()        
         self.config = deepcopy(config)
         self.misc_node_class_names = ['node', 'EgoVehicle', 'EgoDrone']
+        
+        self._optimzers: Dict[str, Optimizer] = {}
+        
+        #---- More collections of model_ids for convinient use
         # {class_name: [  [model_id, [[scene_id, obj_id], [...]]],   [...]  ]}
         self.class_name_infos: Dict[str, Dict[str, List[Tuple[str, str]]]] = {}
+        # model_ids that could belong to certain scene or certain object of a certain scene.
+        self.scene_model_ids: Dict[str, List[str]] = {} 
+        # model_ids that don't belong to certain scene; i.e. shared across multiple scenes
+        self.across_model_ids: List[str] = []
 
         """ Example on how to use `self.class_name_infos`: 
         >>> for class_name, model_id_map in self.asset_bank.class_name_infos.items():
@@ -48,22 +53,39 @@ class AssetBank(nn.ModuleDict):
     def class_name_configs(self) -> Dict[str, ConfigDict]:
         return self.config
 
-    @property
-    def param_groups(self):
-        assert len(self._param_groups) > 0, "Empty param group. \nPlease pass 'optim_cfg' when invoking 'load_asset_bank'"
-        return self._param_groups
+    def named_optimzers(self, only_used=False):
+        """
+        NOTE:
+        Q: Which situations require `only_used` to be True ?
+        A: 
+        - Preventing GradScaler complaining "No inf checks were recorded for this optimizer."\
+            due to empty `optimizer_state["found_inf_per_device"]` when all .grad is None.
+        NOTE: Performance (Pure check time):
+        - 5.76 us for StreetSurf
+        - 22.9 us for neuralsim
+        """
+        if only_used:
+            for n, o in self._optimzers.items():
+                if any(param.grad is not None for group in o.param_groups for param in group['params']):
+                    yield n, o
+        else:
+            yield from self._optimzers.items()
 
-    def compute_model_id(self, obj: SceneNode = None, scene: Scene = None, class_name: str = None) -> str:
+    def optimzers(self, only_used=True):
+        for n, o in self.named_optimzers(only_used=only_used):
+            yield o
+
+    def asset_compute_id(self, obj: SceneNode = None, scene: Scene = None, class_name: str = None) -> str:
         """
         Computes model_id using configured model_class in `class_name_configs`.
         """
-        from app.models.base import AssetModelMixin # To avoid circular import 
+        from app.models.asset_base import AssetModelMixin # To avoid circular import 
         if obj is not None:
             class_name = class_name or obj.class_name
             scene = scene or obj.scene
         if (cfg:=self.class_name_configs.get(class_name, None)) is not None:
             model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
-            model_id = model_class.compute_model_id(scene=scene, obj=obj, class_name=class_name)
+            model_id = model_class.asset_compute_id(scene=scene, obj=obj, class_name=class_name)
             return model_id
         else:
             raise RuntimeError(f"Can not find class_name={class_name} in assetbank.")
@@ -80,32 +102,25 @@ class AssetBank(nn.ModuleDict):
         obj = scene.drawable_groups_by_class_name['Sky'][0]
         return obj.model
 
+    def get_scene_related_model_ids(self, scene_id: Union[Scene, str]):
+        model_ids = self.across_model_ids + self.scene_model_ids[scene_id if isinstance(scene_id, str) else scene_id.id]
+        return model_ids
+
     def create_asset_bank(
         self, 
         scene_bank: IDListedDict[Scene], *, 
-        optim_cfg: Union[Number, dict] = None, 
-        load: Union[str, dict] = None, 
-        class_name_list: List[str] = None, # Optionally specify a list of class_names
-        load_assets_into_scene=True, 
-        device=torch.device("cuda")):
+        load_state_dict: Union[str, dict] = None, 
+        load_assets_into_scene: bool = True, 
+        do_training_setup: bool = False, 
+        class_name_list: List[str] = None, # Optionally,  specify a list of class_names
+        device=None):
         
-        from app.models.base import AssetModelMixin, AssetAssignment # To avoid circular import
+        from app.models.asset_base import AssetModelMixin, AssetAssignment # To avoid circular import
         self.scene_bank = scene_bank
-        self.device = device
         
         if class_name_list is not None:
             if not isinstance(class_name_list, list):
                 class_name_list = [class_name_list]
-
-        if optim_cfg is not None:
-            if is_scalar(optim_cfg):
-                default_optim_cfg = optim_cfg
-                optim_cfg = {}
-            elif isinstance(optim_cfg, dict):
-                optim_cfg = optim_cfg.copy()
-                default_optim_cfg = optim_cfg.pop('default')
-            else:
-                raise ValueError(f"Invalid type of optim_cfg={type(optim_cfg)}; the value is {optim_cfg}")
 
         for class_name, cfg in self.class_name_configs.items():
             if class_name_list is not None and class_name not in class_name_list:
@@ -119,70 +134,78 @@ class AssetBank(nn.ModuleDict):
             if assigned_to == AssetAssignment.OBJECT:
                 for scene in scene_bank:
                     for obj in scene.all_nodes_by_class_name.get(class_name, []):
-                        model_id = model_class.compute_model_id(scene=scene, obj=obj, class_name=class_name)
+                        model_id = model_class.asset_compute_id(scene=scene, obj=obj, class_name=class_name)
                         model: AssetModelMixin = model_class(**cfg.model_params, device=device)
                         model.assigned_to = assigned_to
-                        model.init_asset_config(**cfg.get('asset_params', {}))
-                        model.populate(scene=scene, obj=obj, config=model.populate_cfg, device=device)
+                        model.asset_init_config(**cfg.get('asset_params', {}))
+                        model.asset_populate(scene=scene, obj=obj, config=model.populate_cfg, device=device)
+                        model.to(device) # To make sure
                         self.add_module(model_id, model)
                         self.class_name_infos.setdefault(class_name, {})[model_id] = [(scene.id, obj.id),]
+                        self.scene_model_ids.setdefault(scene.id, []).append(model_id)
                         if load_assets_into_scene:
                             obj.model = model
                             scene.add_node_to_drawable(obj)
-                        if optim_cfg is not None:
-                            cls_optim_cfg = optim_cfg.get(class_name, default_optim_cfg)
-                            self._param_groups.extend(model.get_param_group(cls_optim_cfg, prefix=model_id))
+                        if do_training_setup:
+                            model.training_setup(model.training_cfg)
+                            self._optimzers[model_id] = model.optimizer
 
             elif assigned_to == AssetAssignment.MULTI_OBJ: # The same with MULTI_OBJ_MULTI_SCENE
                 obj_list = []
                 for scene in scene_bank:
                     obj_list.extend(scene.all_nodes_by_class_name.get(class_name, []))
-                obj_full_unique_ids = [obj.full_unique_id for obj in obj_list]
-                model_id = model_class.compute_model_id(scene=None, obj=None, class_name=class_name)
-                model: AssetModelMixin = model_class(key_list=obj_full_unique_ids, **cfg.model_params, device=device)
+                if len(obj_list) == 0:
+                    continue
+                model_id = model_class.asset_compute_id(scene=None, obj=None, class_name=class_name)
+                model: AssetModelMixin = model_class(**cfg.model_params, device=device)
                 model.assigned_to = assigned_to
-                model.init_asset_config(**cfg.get('asset_params', {}))
-                model.populate(scene=None, obj=None, config=model.populate_cfg, device=device)
+                model.asset_init_config(**cfg.get('asset_params', {}))
+                model.asset_populate(scene=scene_bank.to_list(), obj=obj_list, config=model.populate_cfg, device=device)
+                model.to(device) # To make sure
                 self.add_module(model_id, model)
                 self.class_name_infos.setdefault(class_name, {})[model_id] = [(obj.scene.id, obj.id) for obj in obj_list]
+                self.across_model_ids.append(model_id)
                 if load_assets_into_scene:
                     for obj in obj_list:
                         obj.model = model
                         scene.add_node_to_drawable(obj)
-                if optim_cfg is not None:
-                    cls_optim_cfg = optim_cfg.get(class_name, default_optim_cfg)
-                    self._param_groups.extend(model.get_param_group(cls_optim_cfg, prefix=model_id))
+                if do_training_setup:
+                    model.training_setup(model.training_cfg)
+                    self._optimzers[model_id] = model.optimizer
 
             elif assigned_to == AssetAssignment.MULTI_OBJ_ONE_SCENE:
                 for scene in scene_bank:
                     obj_list = scene.all_nodes_by_class_name.get(class_name, [])
                     if len(obj_list) == 0:
                         continue
-                    obj_full_unique_ids = [obj.full_unique_id for obj in obj_list]
-                    model_id = model_class.compute_model_id(scene=scene, obj=None, class_name=class_name)
-                    model: AssetModelMixin = model_class(key_list=obj_full_unique_ids, **cfg.model_params, device=device)
+                    model_id = model_class.asset_compute_id(scene=scene, obj=None, class_name=class_name)
+                    model: AssetModelMixin = model_class(**cfg.model_params, device=device)
                     model.assigned_to = assigned_to
-                    model.init_asset_config(**cfg.get('asset_params', {}))
-                    model.populate(scene=scene, obj=None, config=model.populate_cfg, device=device)
+                    model.asset_init_config(**cfg.get('asset_params', {}))
+                    model.asset_populate(scene=scene, obj=obj_list, config=model.populate_cfg, device=device)
+                    model.to(device) # To make sure
                     self.add_module(model_id, model)
                     self.class_name_infos.setdefault(class_name, {})[model_id] = [(scene.id, obj.id) for obj in obj_list]
+                    self.scene_model_ids.setdefault(scene.id, []).append(model_id)
                     if load_assets_into_scene:
                         for obj in obj_list:
                             obj.model = model
                             scene.add_node_to_drawable(obj)
-                    if optim_cfg is not None:
-                        cls_optim_cfg = optim_cfg.get(class_name, default_optim_cfg)
-                        self._param_groups.extend(model.get_param_group(cls_optim_cfg, prefix=model_id))
+                    if do_training_setup:
+                        model.training_setup(model.training_cfg)
+                        self._optimzers[model_id] = model.optimizer
 
             elif assigned_to == AssetAssignment.SCENE:
                 for scene in scene_bank:
-                    model_id = model_class.compute_model_id(scene=scene, obj=None, class_name=class_name)
+                    model_id = model_class.asset_compute_id(scene=scene, obj=None, class_name=class_name)
                     model: AssetModelMixin = model_class(**cfg.model_params, device=device)
                     model.assigned_to = assigned_to
-                    model.init_asset_config(**cfg.get('asset_params', {}))
-                    model.populate(scene=scene, obj=None, config=model.populate_cfg, device=device)
+                    model.asset_init_config(**cfg.get('asset_params', {}))
+                    model.asset_populate(scene=scene, obj=None, config=model.populate_cfg, device=device)
+                    model.to(device) # To make sure
                     self.add_module(model_id, model)
                     self.class_name_infos.setdefault(class_name, {})[model_id] = [(scene.id, None),]
+                    self.scene_model_ids.setdefault(scene.id, []).append(model_id)
                     if load_assets_into_scene:
                         if class_name == 'LearnableParams':
                             scene.learnable_params = model
@@ -192,52 +215,31 @@ class AssetBank(nn.ModuleDict):
                             model.scene = scene
                         else:
                             raise RuntimeError(f"Unsupported scene-level class_name={class_name}")
-                    if optim_cfg is not None:
-                        cls_optim_cfg = optim_cfg.get(class_name, default_optim_cfg)
-                        self._param_groups.extend(model.get_param_group(cls_optim_cfg, prefix=model_id))
+                    if do_training_setup:
+                        model.training_setup(model.training_cfg)
+                        self._optimzers[model_id] = model.optimizer
 
             elif assigned_to == AssetAssignment.MULTI_SCENE:
-                # NOTE: Most of the functionlities should be supported with MULTI_OBJ_MULTI_SCENE ?
+                # NOTE: Most of the functionlities should be covered by MULTI_OBJ_MULTI_SCENE ?
                 pass
             
             elif assigned_to == AssetAssignment.MISC:
                 # NOTE: For models that does not belong to scene / objects (e.g. belonging to renderers)
-                model_id = model_class.compute_model_id(scene=None, obj=None, class_name=class_name)
+                model_id = model_class.asset_compute_id(scene=None, obj=None, class_name=class_name)
                 model: AssetModelMixin = model_class(**cfg.model_params, device=device)
                 model.assigned_to = assigned_to
-                model.init_asset_config(**cfg.get('asset_params', {}))
-                model.populate(scene=None, obj=None, config=model.populate_cfg, device=device)
+                model.asset_init_config(**cfg.get('asset_params', {}))
+                model.asset_populate(scene=None, obj=None, config=model.populate_cfg, device=device)
+                model.to(device) # To make sure
                 self.add_module(model_id, model)
                 self.class_name_infos.setdefault(class_name, {})[model_id] = []
-                if optim_cfg is not None:
-                    cls_optim_cfg = optim_cfg.get(class_name, default_optim_cfg)
-                    self._param_groups.extend(model.get_param_group(cls_optim_cfg, prefix=model_id))
+                self.across_model_ids.append(model_id)
+                if do_training_setup:
+                    model.training_setup(model.training_cfg)
+                    self._optimzers[model_id] = model.optimizer
 
-        if load is not None:
-            self.load_asset_bank(load, strict=(class_name_list is None))
-        
-        self.to(device)
-
-    def load_per_scene_models(self, scene: Scene):
-        from app.models.base import AssetModelMixin, AssetAssignment # To avoid circular import
-        
-        class_name = 'LearnableParams'
-        if class_name in self.class_name_configs.keys():
-            cfg = self.class_name_configs[class_name]
-            model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
-            model_id = model_class.compute_model_id(scene=scene, obj=None, class_name=class_name)
-            scene.learnable_params = self[model_id]
-            # NOTE: !!! Important !!! Might be initialized with scene_bank_trainval and needed to load into scene_bank_test
-            scene.learnable_params.scene = scene
-        
-        class_name = 'ImageEmbeddings'
-        if class_name in self.class_name_configs.keys():
-            cfg = self.class_name_configs[class_name]
-            model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
-            model_id = model_class.compute_model_id(scene=scene, obj=None, class_name=class_name)
-            scene.image_embeddings = self[model_id]
-            # NOTE: !!! Important !!! Might be initialized with scene_bank_trainval and needed to load into scene_bank_test
-            scene.image_embeddings.scene = scene # !!! Important !!!
+        if load_state_dict is not None:
+            self.load_asset_bank(load_state_dict, strict=(class_name_list is None))
 
     # Overwrites
     def state_dict(self, destination=None, prefix: str='', keep_vars=False):
@@ -264,89 +266,54 @@ class AssetBank(nn.ModuleDict):
         module.id = name
         return super().add_module(name, module)
 
-    def preprocess_model(self):
+    def model_setup(self, scene_id: str = None):
         """
         Operations that need to be executed only once throughout the entire rendering process, 
         as long as the network params remains untouched.
         """
-        for model in self.values():
-            model.preprocess_model()
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.model_setup()
 
-    def preprocess_per_train_step(self, cur_it: int, logger: Logger=None):
+    def training_update_lr(self, cur_it: int, scene_id: str = None):
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.training_update_lr(cur_it)
+
+    def training_clip_grad(self, scene_id: str = None):
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.training_clip_grad()
+
+    def training_before_per_step(self, cur_it: int, logger: Logger=None, scene_id: str = None):
         """
         Operations that need to be executed before each training step (before `trainer.forward`).
         """
-        for model in self.values():
-            model.preprocess_per_train_step(cur_it, logger=logger)
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.training_before_per_step(cur_it, logger=logger)
 
-    def postprocess_per_train_step(self, cur_it: int, logger: Logger=None):
+    def training_after_per_step(self, cur_it: int, logger: Logger=None, scene_id: str = None):
         """
         Operations that need to be executed after each training step (after `optmizer.step`).
         """
-        for model in self.values():
-            model.postprocess_per_train_step(cur_it, logger=logger)
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.training_after_per_step(cur_it, logger=logger)
 
-    def preprocess_per_render_frame(self, renderer, observer, per_frame_info: dict={}):
+    def rendering_before_per_view(self, renderer, observer, per_frame_info: dict={}, scene_id: str = None):
         """
         Operations that need to be executed for every frame or view.
         """
-        for model in self.values():
-            model.preprocess_per_render_frame(renderer, observer, per_frame_info=per_frame_info)
-
-    def configure_clip_grad_group(self, scene_bank, clip_grad_cfg: ConfigDict):
-        clip_grad_groups = []
-        if isinstance(clip_grad_cfg, Number):
-            # for g in self._param_groups:
-            #     clip_grad_groups.append({
-            #         'name': g['name'], 
-            #         'params': g['params'], 
-            #         'clip_grad_val': float(clip_grad_cfg)
-            #     })
-            clip_grad_groups = [{'params':self.parameters(), 'clip_grad_val': float(clip_grad_cfg)}]
-        elif isinstance(clip_grad_cfg, dict):
-            clip_grad_cfg = clip_grad_cfg.deepcopy()
-            
-            if 'default' in clip_grad_cfg:
-                clip_grad_val = clip_grad_cfg.pop('default')
-                clip_grad_groups.append({'params':self.parameters(), 'clip_grad_val': clip_grad_val})
-            
-            for class_name, cfg in clip_grad_cfg.items():
-                def _configure(model: nn.Module):
-                    if isinstance(cfg, Number):
-                        clip_grad_groups.append({'params':model.parameters(), 'clip_grad_val': clip_grad_val})
-                    elif isinstance(cfg, dict):
-                        if 'default' in cfg:
-                            clip_grad_val = cfg.pop('default')
-                            clip_grad_groups.append({'params':model.parameters(), 'clip_grad_val': clip_grad_val})
-                        
-                        for pnp, clip_grad_val in cfg.items():
-                            plist = []
-                            for pn, p in model.named_parameters():
-                                if re.search('^'+pnp, pn):
-                                    plist.append(p)
-                            if len(plist) == 0:
-                                log.warn(f"pattern '{pnp}' is not found when setting clip grad.")
-                            else:
-                                clip_grad_groups.append({'params': plist, 'clip_grad_val': clip_grad_val})
-                
-                if class_name in self.class_name_configs.keys():
-                    for scene in scene_bank:
-                        for obj in scene.get_drawable_groups_by_class_name(class_name, False):
-                            model = obj.model
-                            _configure(model)
-                else:
-                    raise RuntimeError(f"Invalid class_name={class_name}")
-
-        self._clip_grad_groups = clip_grad_groups
-
-    def apply_clip_grad(self):
-        #---- Configured grad clip val
-        if len(self._clip_grad_groups) > 0:
-            for cg in self._clip_grad_groups:
-                torch.nn.utils.clip_grad.clip_grad_value_(cg['params'], cg['clip_grad_val'])
-        #---- Custom layer-wise grad clips
-        for model in self.values():
-            model.custom_grad_clip_step()
+        model_ids = list(self.keys()) if scene_id is None else self.get_scene_related_model_ids(scene_id)
+        for model_id in model_ids:
+            model = self[model_id]
+            model.rendering_before_per_view(renderer, observer, per_frame_info=per_frame_info)
     
     def stat_param(self, with_grad=False, prefix: str='') -> Dict[str, float]:
         prefix_ = prefix + ('.' if prefix and not prefix.endswith('.') else '')

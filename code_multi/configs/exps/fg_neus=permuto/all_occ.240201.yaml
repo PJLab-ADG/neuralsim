@@ -1,0 +1,836 @@
+Experiment explain:
+- Last update: 2024.02.01
+- Representation:
+  - rigid fg with gtbox = generative permuto neus
+  - nonrigid fg with gtbox = generative dynamic permuto neus
+  - bg = streetsurf
+- Used information:
+  - with_gtbox = True
+  - with_mask = True
+  - with_lidar = True
+
+#------------------------------------------------------------
+#------------    Some shortcut configs
+#------------------------------------------------------------
+
+device_ids: -1
+
+num_rays_pixel: 8192
+num_rays_lidar: 8192
+
+near: 0.1
+far: 200.0
+depth_max: 120.0 # To visualize / colorize depth when render/eval
+extend_size: 60.0
+num_coarse: 128 # Number of coarse samples on each ray
+step_size: 0.2 # Ray-marching step size
+upsample_inv_s: 64.0
+upsample_inv_s_factors: [1., 4., 16.]
+num_fine: [8,8,32] # [8,8,8] # Number of samples of 3 upsample stages
+radius_scale_min: 1 # Nearest sampling shell of NeRF++ background (Distant-view model)
+radius_scale_max: 1000 # Furthest sampling shell of NeRF++ background (Distant-view model)
+distant_interval_type: inverse_proportional
+distant_mode: fixed_cuboid_shells
+distant_nsample: 64
+
+sdf_scale: 25.0 # The real-world length represented by one unit of SDF
+
+rgb_fn: l1
+rgb_fn_param: {}
+
+lidar_fn: l1
+lidar_fn_param: {}
+w_lidar: 0.02
+w_los: 0.1
+# eps_los: anneal_1.5_0.75_0.5
+
+w_mask: 0.3
+
+num_uniform: ${eval:"2**16"}
+
+w_eikonal: 0.01
+on_render_ratio: 0.2
+on_occ_ratio: 1.0
+on_render_type: both
+safe_mse: true
+errlim: 5
+
+w_sparsity: 0.002
+sparsity_anneal_for: 1000
+sparsity_enable_after: 0
+
+clbeta: 10.0
+clw: 0.2
+clearance_sdf: 0.02 # 0.02 * (sdf_scale=25) = 0.5m
+
+num_iters: 15000
+warmup_steps: 2000
+min_factor: 0.06
+
+veh_lr: 1.0e-2
+veh_wei: 1.0e-3
+veh_wei_on_render_ratio: 0.02
+veh_dtype: half
+veh_log2_hashmap_size: 20
+veh_n_levels: 16
+veh_n_feats: 2
+veh_latent_dim: 4
+veh_refine_lr: 0.001 # 0.01 is too large
+
+ped_lr: 1.0e-2
+ped_latent_dim: 2
+ped_nc: 16
+ped_log2_hashmap_size: 20
+ped_n_levels: 12
+ped_n_feats: 4
+ped_step: 0.05
+ped_bounding_size: 2.4
+ped_lnini: 0.1
+ped_factor: 10.0
+ped_accel_ema: 0.97
+ped_fine_res: 1200.0
+ped_errmap_focus: 0.2
+
+ins_latent_init_method: zero
+frame_latent_init_method: linspace
+frame_latent_learnable: false
+
+log2_hashmap_size: 20
+max_num_levels: null
+
+start_it: 0
+start_level: 2
+stop_it: 4000 # !!! Important for stable training.
+final_inv_s: 2400.0
+ctrl_start: 3000
+lnini: 0.1
+
+use_estimate_alpha: false
+
+geo_init_method: pretrain_after_zero_out # pretrain
+
+image_embedding_dim: 4
+
+# camera_list: [camera_FRONT_LEFT, camera_FRONT, camera_FRONT_RIGHT]
+camera_list: [camera_SIDE_LEFT, camera_FRONT_LEFT, camera_FRONT, camera_FRONT_RIGHT, camera_SIDE_RIGHT]
+lidar_list: [lidar_TOP, lidar_FRONT, lidar_REAR, lidar_SIDE_LEFT, lidar_SIDE_RIGHT]
+lidar_weight: [0.4,0.1,0.1,0.1,0.1] # Will be normalized when using
+
+#------------------------------------------------------------
+#------------    Full configs
+#------------------------------------------------------------
+exp_dir: ./logs/neuralsim/seg965324
+# exp_dir: ./logs/neuralsim_refactor/exp6.seg173026.joint.all_ema_occ.ped.n=${ped_latent_dim}.step=${ped_step}.bs=${ped_bounding_size}.lnini=${ped_lnini}_fct=${ped_factor}.ema=${ped_accel_ema}.fine=${ped_fine_res}.T=${ped_log2_hashmap_size}.initocc=22.errmap=32x64.focus_on_ped=${ped_errmap_focus}.fix3
+
+dataset_cfg: 
+  target: dataio.autonomous_driving.WaymoDataset
+  param:
+    # root: /nvme/guojianfei/waymo/processed/
+    root: /data1/waymo/processed/
+    # root: /home/ventus/datasets/waymo/processed/
+    # root: ./data/waymo/processed/
+    rgb_dirname: images
+    lidar_dirname: lidars
+
+    # mask_dirname: masks
+    # mask_dirname: masks_vit_adapter
+    mask_dirname: masks_vit_adapter
+    mask_taxonomy: ade20k
+
+scenebank_cfg:
+  # NOTE: scene_id[,start_frame[,n_frames]]
+  scenarios:
+    # - segment-7670103006580549715_360_000_380_000_with_camera_labels, 15
+    # - segment-1191788760630624072_3880_000_3900_000_with_camera_labels
+    # - segment-1730266523558914470_305_260_325_260_with_camera_labels
+    # - segment-1758724094753801109_1251_037_1271_037_with_camera_labels
+    # - segment-1773696223367475365_1060_000_1080_000_with_camera_labels
+    # - segment-1887497421568128425_94_000_114_000_with_camera_labels
+    # - segment-1891390218766838725_4980_000_5000_000_with_camera_labels
+    # - segment-1918764220984209654_5680_000_5700_000_with_camera_labels
+    # - segment-1926967104529174124_5214_780_5234_780_with_camera_labels
+    # - segment-2922309829144504838_1840_000_1860_000_with_camera_labels
+    # - segment-2935377810101940676_300_000_320_000_with_camera_labels
+    # - segment-2961247865039433386_920_000_940_000_with_camera_labels
+    # - segment-3195159706851203049_2763_790_2783_790_with_camera_labels
+    # - segment-3461228720457810721_4511_120_4531_120_with_camera_labels
+    # - segment-3490810581309970603_11125_000_11145_000_with_camera_labels
+    # - segment-3591015878717398163_1381_280_1401_280_with_camera_labels
+    # - segment-3644145307034257093_3000_400_3020_400_with_camera_labels
+    # - segment-3657581213864582252_340_000_360_000_with_camera_labels
+    # - segment-3919438171935923501_280_000_300_000_with_camera_labels
+    # - segment-4164064449185492261_400_000_420_000_with_camera_labels
+    # - segment-4414235478445376689_2020_000_2040_000_with_camera_labels
+    # - segment-4468278022208380281_455_820_475_820_with_camera_labels
+    # - segment-4537254579383578009_3820_000_3840_000_with_camera_labels
+    # - segment-4604173119409817302_2820_000_2840_000_with_camera_labels
+    # - segment-4808842546020773462_2310_000_2330_000_with_camera_labels
+    # - segment-4960194482476803293_4575_960_4595_960_with_camera_labels
+    # - segment-5451442719480728410_5660_000_5680_000_with_camera_labels
+    # - segment-5495302100265783181_80_000_100_000_with_camera_labels
+    # - segment-6234738900256277070_320_000_340_000_with_camera_labels
+    # - segment-6242822583398487496_73_000_93_000_with_camera_labels
+    # - segment-6390847454531723238_6000_000_6020_000_with_camera_labels
+    # - segment-6417523992887712896_1180_000_1200_000_with_camera_labels
+    # - segment-6792191642931213648_1522_000_1542_000_with_camera_labels
+    # - segment-6814918034011049245_134_170_154_170_with_camera_labels
+    # - segment-7000927478052605119_1052_330_1072_330_with_camera_labels
+    # - segment-7313718849795510302_280_000_300_000_with_camera_labels
+    # - segment-7458568461947999548_700_000_720_000_with_camera_labels
+    # - segment-7554208726220851641_380_000_400_000_with_camera_labels
+    # - segment-7643597152739318064_3979_000_3999_000_with_camera_labels
+    # - segment-7799671367768576481_260_000_280_000_with_camera_labels
+    # - segment-7885161619764516373_289_280_309_280_with_camera_labels, 0, 186
+    # - segment-7912728502266478772_1202_200_1222_200_with_camera_labels
+    # - segment-7940496892864900543_4783_540_4803_540_with_camera_labels
+    # - segment-7996500550445322129_2333_304_2353_304_with_camera_labels
+    # - segment-8700094808505895018_7272_488_7292_488_with_camera_labels
+    # - segment-8938046348067069210_3800_000_3820_000_with_camera_labels
+    # - segment-9058545212382992974_5236_200_5256_200_with_camera_labels
+    # - segment-9179922063516210200_157_000_177_000_with_camera_labels
+    - segment-9653249092275997647_980_000_1000_000_with_camera_labels, 0, 190
+    # - segment-10072231702153043603_5725_000_5745_000_with_camera_labels
+    # - segment-10082223140073588526_6140_000_6160_000_with_camera_labels
+    # - segment-10391312872392849784_4099_400_4119_400_with_camera_labels
+    # - segment-10517728057304349900_3360_000_3380_000_with_camera_labels, 0, 150
+    # - segment-10526338824408452410_5714_660_5734_660_with_camera_labels
+    # - segment-10588771936253546636_2300_000_2320_000_with_camera_labels
+    # - segment-10750135302241325253_180_000_200_000_with_camera_labels
+    # - segment-11017034898130016754_697_830_717_830_with_camera_labels
+    # - segment-11454085070345530663_1905_000_1925_000_with_camera_labels
+    # - segment-11566385337103696871_5740_000_5760_000_with_camera_labels
+    # - segment-12208410199966712301_4480_000_4500_000_with_camera_labels
+    # - segment-12212767626682531382_2100_150_2120_150_with_camera_labels
+    # - segment-12337317986514501583_5346_260_5366_260_with_camera_labels
+    # - segment-13679757109245957439_4167_170_4187_170_with_camera_labels
+    # - segment-14369250836076988112_7249_040_7269_040_with_camera_labels
+    # - segment-14430914081327266277_6480_000_6500_000_with_camera_labels
+    # - segment-14734824171146590110_880_000_900_000_with_camera_labels
+    # - segment-14763701469114129880_2260_000_2280_000_with_camera_labels
+    # - segment-14777753086917826209_4147_000_4167_000_with_camera_labels
+    # - segment-15053781258223091665_3192_117_3212_117_with_camera_labels
+    # - segment-15166409572599113654_808_000_828_000_with_camera_labels
+    # - segment-16262849101474060261_3459_585_3479_585_with_camera_labels
+    # - segment-16801666784196221098_2480_000_2500_000_with_camera_labels
+    # - segment-16911037681440249335_700_000_720_000_with_camera_labels
+    # - segment-17216329305659006368_4800_000_4820_000_with_camera_labels
+    # - segment-17407069523496279950_4354_900_4374_900_with_camera_labels
+    # - segment-17437352085580560526_2120_000_2140_000_with_camera_labels
+    # - segment-17601040886987343289_472_000_492_000_with_camera_labels
+    # - segment-17778522338768131809_5920_000_5940_000_with_camera_labels
+    # - segment-17885096890374683162_755_580_775_580_with_camera_labels, 0, 170
+    # - segment-17987556068410436875_520_610_540_610_with_camera_labels
+    # - segment-18141076662151909970_2755_710_2775_710_with_camera_labels, 0, 136
+  observer_cfgs: 
+    Camera:
+      list: ${camera_list}
+    RaysLidar:
+      list: ${lidar_list}
+  object_cfgs:
+    Vehicle:
+      dynamic_only: true
+    Pedestrian:
+      dynamic_only: true
+    Cyclist:
+      dynamic_only: true
+  load_class_names: [Street, Vehicle, Pedestrian, Cyclist]
+  no_objects: false # Set to true to skip loading foreground objects into scene graph
+  align_orientation: true
+  consider_distortion: true
+  scene_graph_has_ego_car: true
+
+assetbank_cfg:
+  Street:
+    model_class: app.models.single.LoTDNeuSStreet
+    model_params:
+      dtype: half
+      var_ctrl_cfg:
+        ln_inv_s_init: ${lnini}
+        ln_inv_s_factor: 10.0
+        ctrl_type: mix_linear
+        start_it: ${ctrl_start}
+        stop_it: ${training.num_iters}
+        final_inv_s: ${final_inv_s}
+      cos_anneal_cfg: null
+      surface_cfg:
+        sdf_scale: ${sdf_scale}
+        encoding_cfg:
+          lotd_use_cuboid: true
+          lotd_auto_compute_cfg:
+            type: ngp
+            target_num_params: ${eval:"32*(2**20)"} # 64 MiB float16 params -> 32 Mi params
+            min_res: 16
+            n_feats: 2
+            max_num_levels: ${max_num_levels}
+            log2_hashmap_size: ${log2_hashmap_size}
+          param_init_cfg:
+            type: uniform_to_type
+            bound: 1.0e-4
+          anneal_cfg:
+            type: hardmask
+            start_it: ${start_it}
+            start_level: ${start_level} # (need to be small: so the training is stable; not too small, so there's still valid initialize pretraining.)
+            stop_it: ${stop_it} # Not for too much iters; should end very soon to not hinder quality
+        decoder_cfg: 
+          type: mlp
+          D: 1
+          W: 64
+          # select_n_levels: 14
+          activation:
+            type: softplus
+            beta: 100.0
+        n_extra_feat_from_output: 0
+        geo_init_method: ${geo_init_method}
+      radiance_cfg:
+        use_pos: true
+        use_view_dirs: true
+        dir_embed_cfg: 
+          type: spherical
+          degree: 4
+        D: 2
+        W: 64
+        n_appear_embedding: ${image_embedding_dim}
+      use_tcnn_backend: false
+      accel_cfg:
+        type: occ_grid
+        vox_size: 1.0
+        # resolution: [64,64,64]
+        occ_val_fn_cfg:
+          type: sdf
+          inv_s: 256.0 # => +- 0.01 sdf @ 0.3 thre
+        occ_thre: 0.3
+        ema_decay: 0.95
+        init_cfg:
+          mode: from_net
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_net_cfg:
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_samples_cfg: {}
+        n_steps_between_update: 16
+        n_steps_warmup: 256
+      ray_query_cfg:
+        query_mode: march_occ_multi_upsample_compressed
+        # query_mode: march_occ_multi_upsample
+        query_param:
+          nablas_has_grad: true
+          num_coarse: ${num_coarse}
+          num_fine: ${num_fine}
+          coarse_step_cfg:
+            step_mode: linear
+          march_cfg:
+            step_size: ${step_size} # Typical value: (far-near) / 4000
+            max_steps: 4096
+          upsample_inv_s: ${upsample_inv_s}
+          upsample_inv_s_factors: ${upsample_inv_s_factors}
+          upsample_use_estimate_alpha: ${use_estimate_alpha}
+    asset_params:
+      initialize_cfg: 
+        target_shape: road_surface
+        obs_ref: camera_FRONT # Reference observer. Its trajectory will be used for initialization.
+        lr: 1.0e-3
+        num_iters: 1000
+        num_points: 262144
+        w_eikonal: 3.0e-3
+        floor_dim: z
+        floor_up_sign: 1
+        ego_height: 2.0
+      preload_cfg: {}
+      populate_cfg:
+        extend_size: ${extend_size}
+      training_cfg:
+        lr: 1.0e-2
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        invs_betas: [0.9, 0.999]
+        scheduler: ${training.scheduler}
+  Distant:
+    model_class: app.models.single.LoTDNeRFDistant
+    model_params:
+      dtype: half
+      encoding_cfg:
+        input_ch: 4
+        lotd_use_cuboid: true
+        lotd_auto_compute_cfg:
+          type: ngp4d
+          target_num_params: ${eval:"16*(2**20)"} # 16 Mi params
+          min_res_xyz: 16
+          min_res_w: 4
+          n_feats: 2
+          log2_hashmap_size: 19
+          per_level_scale: 1.382
+        param_init_cfg:
+          type: uniform_to_type
+          bound: 1.0e-4
+        # anneal_cfg:
+        #   type: hardmask
+        #   start_it: ${start_it}
+        #   start_level: ${bg_start_level} # (need to be small: so the training is stable; not too small, so there's still valid initialize pretraining.)
+        #   stop_it: ${stop_it} # Not for too much iters; should end very soon to not hinder quality
+      extra_pos_embed_cfg:
+        type: identity
+      density_decoder_cfg: 
+        type: mlp
+        D: 1
+        W: 64
+        output_activation: softplus
+      radiance_decoder_cfg:
+        use_pos: false
+        # pos_embed_cfg:
+        #   type: identity
+        use_view_dirs: false
+        # dir_embed_cfg:
+        #   type: spherical
+        #   degree: 4
+        use_nablas: false
+        D: 2
+        W: 64
+        n_appear_embedding: ${image_embedding_dim}
+      n_extra_feat_from_output: 0
+      use_tcnn_backend: false
+      include_inf_distance: false # !!! has sky
+      radius_scale_min: ${radius_scale_min}
+      radius_scale_max: ${radius_scale_max}
+      ray_query_cfg:
+        query_mode: march
+        query_param:
+          march_cfg:
+            interval_type: ${distant_interval_type}
+            sample_mode: ${distant_mode}
+            max_steps: ${distant_nsample}
+    asset_params:
+      populate_cfg:
+        cr_obj_classname: Street
+      training_cfg:
+        lr: 1.0e-2
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        scheduler: ${training.scheduler}
+  Sky:
+    model_class: app.models.env.SimpleSky
+    model_params: 
+      dir_embed_cfg:
+        type: sinusoidal
+        n_frequencies: 10
+        use_tcnn_backend: false
+      D: 2
+      W: 256
+      use_tcnn_backend: false
+      n_appear_embedding: ${image_embedding_dim}
+    asset_params:
+      training_cfg:
+        lr: 1.0e-3
+        scheduler: ${training.scheduler}
+  Vehicle:
+    model_class: app.models.shared.AD_GenerativePermutoConcatNeuSObj
+    model_params:
+      latents_cfg:
+        z_ins:
+          dim: ${veh_latent_dim}
+          weight_init: ${ins_latent_init_method}
+      dtype: ${veh_dtype}
+      var_ctrl_cfg:
+        ln_inv_s_init: ${lnini}
+        ln_inv_s_factor: 10.0
+      surface_cfg:
+        bounding_size: 1.4
+        encoding_cfg:
+          permuto_auto_compute_cfg:
+            type: multi_res
+            coarsest_res: 16.0
+            finest_res: 2000.0
+            n_levels: ${veh_n_levels}
+            n_feats: ${veh_n_feats}
+            log2_hashmap_size: ${veh_log2_hashmap_size}
+            apply_random_shifts_per_level: true
+        decoder_cfg:
+          type: mlp
+          D: 1
+          W: 64
+        geo_init_method: pretrain
+      radiance_cfg:
+        pos_embed_cfg:
+          type: identity
+        use_view_dirs: true
+        dir_embed_cfg:
+          type: spherical
+          degree: 4
+        D: 2
+        W: 64
+        skips: []
+      accel_cfg:
+        type: occ_grid_batched_ema
+        resolution: [32,32,32]
+        occ_val_fn_cfg:
+          type: sdf
+          inv_s: 256.0
+        occ_thre: 0.3
+        ema_decay: 0.95
+        init_cfg:
+          mode: from_net
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_net_cfg:
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_samples_cfg: {}
+        n_steps_between_update: 16
+        n_steps_warmup: 256
+      ray_query_cfg:
+        query_mode: march_occ_multi_upsample_compressed
+        query_param:
+          nablas_has_grad: true
+          num_coarse: 32
+          num_fine: 16
+          upsample_inv_s: 64.0
+          upsample_inv_s_factors: [1, 4]
+          coarse_step_cfg:
+            step_mode: linear
+          march_cfg:
+            step_size: 0.05
+            max_steps: 256
+    asset_params:
+      initialize_cfg:
+        num_iters: 3000
+        lr: 1.0e-3
+        num_points: 5000
+        resample_z: true
+        batch_size: 16
+      training_cfg:
+        lr: ${veh_lr}
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        invs_betas: [0.9, 0.999]
+        scheduler: ${training.scheduler}
+  Pedestrian:
+    model_class: app.models.shared.AD_Dynamic_GenerativePermutoConcatNeuSObj_Decomp
+    model_params:
+      latents_cfg:
+        z_ins:
+          dim: ${ped_latent_dim}
+          weight_init: ${ins_latent_init_method}
+        z_time:
+          dim: 1
+          learnable: ${frame_latent_learnable}
+          weight_init: 
+            type: ${frame_latent_init_method}
+            start: -10.0
+            end: 10.0
+      dtype: ${veh_dtype}
+      var_ctrl_cfg:
+        ln_inv_s_init: ${ped_lnini}
+        ln_inv_s_factor: ${ped_factor}
+      surface_cfg:
+        bounding_size: ${ped_bounding_size}
+        encoding_cfg:
+          permuto_auto_compute_cfg:
+            type: multi_res
+            coarsest_res: 4.0
+            finest_res: ${ped_fine_res}
+            n_levels: ${ped_n_levels}
+            n_feats: ${ped_n_feats}
+            log2_hashmap_size: ${ped_log2_hashmap_size}
+            apply_random_shifts_per_level: true
+        decoder_cfg:
+          type: mlp
+          D: 1
+          W: 64
+        geo_init_method: pretrain
+      radiance_cfg:
+        pos_embed_cfg:
+          type: identity
+        use_view_dirs: false
+        # use_view_dirs: true
+        # dir_embed_cfg:
+        #   type: spherical
+        #   degree: 4
+        D: 2
+        W: 64
+        skips: []
+      accel_cfg:
+        type: occ_grid_batched_dynamic_ema
+        # resolution: [32,32,32]
+        occ_val_fn_cfg:
+          type: sdf
+          inv_s: 256.0
+        occ_thre: 0.3
+        ema_decay: ${ped_accel_ema}
+        init_cfg:
+          mode: from_net
+          num_steps: 4
+          num_pts: ${eval:"2**22"}
+        update_from_net_cfg:
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_samples_cfg: {}
+        n_steps_between_update: 16
+        n_steps_warmup: 256
+      ray_query_cfg:
+        query_mode: march_occ_multi_upsample_compressed
+        query_param:
+          nablas_has_grad: true
+          num_coarse: ${ped_nc}
+          num_fine: 16
+          upsample_inv_s: 64.0
+          upsample_inv_s_factors: [1, 4]
+          coarse_step_cfg:
+            step_mode: linear
+          march_cfg:
+            step_size: ${ped_step}
+            max_steps: 512
+    asset_params:
+      populate_cfg:
+        accel_n_jump_frames: 2
+        accel_use_avg_resolution: true
+        accel_vox_size: 0.2
+      initialize_cfg:
+        num_iters: 3000
+        lr: 1.0e-3
+        num_points: 5000
+        resample_z: true
+        batch_size: 16
+      training_cfg:
+        lr: ${ped_lr}
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        invs_betas: [0.9, 0.999]
+        scheduler: ${training.scheduler}
+  Cyclist: ${.Pedestrian}
+  ImageEmbeddings:
+    model_class: app.models.scene.ImageEmbeddings
+    model_params:
+      dims: ${image_embedding_dim}
+      weight_init: uniform
+      weight_init_std: 1.0e-4
+    asset_params:
+      training_cfg:
+        lr: 2.0e-2
+        scheduler: ${training.scheduler}
+  #--- Pose refine related
+  LearnableParams:
+    model_class: app.models.scene.LearnableParams
+    model_params:
+      refine_ego_motion:
+        # node_id: ego_car
+        class_name: Camera
+      refine_other_motion: 
+        class_name: [ Vehicle ]
+      refine_camera_intr: null
+      refine_camera_extr: null
+      enable_after: 500
+    asset_params:
+      training_cfg:
+        ego_motion:
+          lr: 0.001
+          alpha_lr_rotation: 0.05
+        other_motion:
+          lr: ${veh_refine_lr}
+          alpha_lr_rotation: 0.05
+        scheduler: ${training.scheduler}
+
+renderer:
+  common:
+    with_env: true # !!! has sky
+    with_rgb: true
+    with_normal: true
+    near: ${near} # NOTE: Critical to scene scale!
+    far: ${far}
+  train:
+    depth_use_normalized_vw: false # For meaningful depth supervision (if any)
+    perturb: true
+  val:
+    depth_use_normalized_vw: true # For correct depth rendering
+    perturb: false
+    rayschunk: 4096
+
+training:
+  #---------- Dataset and sampling
+  dataloader:
+    preload: true
+    preload_on_gpu: false
+    tags:
+      camera:
+        downscale: 1
+        list: ${camera_list}
+      image_occupancy_mask: {}
+      # image_human_mask: {}
+      # image_ignore_mask:
+      #   ignore_not_occupied: false
+      #   ignore_dynamic: false
+      #   ignore_human: false # !!! We are learning this
+      lidar:
+        list: ${lidar_list}
+        multi_lidar_merge: true
+        filter_when_preload: false # Significantly slows up preload if true
+        filter_kwargs:
+          filter_in_cams: true
+          filter_out_objs: false # !!! We want this
+          filter_valid: true
+    pixel_dataset:
+      #---------- Frame and pixel dataloader
+      # joint: false
+      # equal_mode: ray_batch
+      # num_rays: ${num_rays_pixel}
+      # frame_sample_mode: uniform
+      # pixel_sample_mode: error_map
+
+      #---------- Joint frame-pixel dataloader
+      joint: true
+      equal_mode: ray_batch
+      num_rays: ${num_rays_pixel}
+    lidar_dataset:
+      equal_mode: ray_batch
+      num_rays: ${num_rays_lidar}
+      frame_sample_mode: uniform
+      lidar_sample_mode: merged_weighted
+      multi_lidar_weight: ${lidar_weight} # Will be normalized when used
+  val_dataloader:
+    preload: false
+    tags:
+      camera:
+        downscale: 4
+        list: ${camera_list}
+      image_occupancy_mask: {}
+      # image_human_mask: {}
+      # image_ignore_mask:
+      #   ignore_not_occupied: false
+      #   ignore_dynamic: false
+      #   ignore_human: false
+    image_dataset:
+      camera_sample_mode: all_list # !!!
+      frame_sample_mode: uniform
+
+  error_map:
+    error_map_hw: [32,64]
+    frac_uniform: ${eval:"0.5-${ped_errmap_focus}"}
+    frac_on_classnames: ${ped_errmap_focus}
+    on_classnames: [ Pedestrian, Cyclist ]
+    frac_mask_err: 0
+    n_steps_max: 500 # NOTE: The actual effective time of this number now needs to be multiplied by the number of cameras! (Because each iteration samples a camera uniformly at random)
+
+  #---------- Training losses
+  uniform_sample: 
+    Street: ${num_uniform}
+    Vehicle: ${num_uniform}
+    Pedestrian: ${num_uniform}
+    Cyclist: ${num_uniform}
+
+  losses:
+    rgb: 
+      fn_type: ${rgb_fn}
+      fn_param: ${rgb_fn_param}
+      respect_ignore_mask: false # Nothing is ignored for now.
+    occupancy_mask:
+      w: ${w_mask}
+      safe_bce: true
+      pred_clip: 0
+    lidar:
+      discard_outliers: 0
+      discard_outliers_median: 100.0
+      discard_toofar: 80.0
+      depth: 
+        w: ${w_lidar}
+        fn_type: ${lidar_fn}
+        fn_param: ${lidar_fn_param}
+      line_of_sight:
+        w: ${w_los}
+        fn_type: neus_unisim
+        fn_param:
+          # epsilon: ${eps_los}
+          epsilon_anneal:
+            type: milestones
+            milestones: [5000, 10000]
+            vals: [1.5, 0.75, 0.5]
+    eikonal:
+      safe_mse: ${safe_mse}
+      safe_mse_err_limit: ${errlim}
+      alpha_reg_zero: 0
+      on_occ_ratio: ${on_occ_ratio}
+      on_render_type: ${on_render_type}
+      on_render_ratio: ${on_render_ratio}
+      class_name_cfgs:
+        Street:
+          w: ${w_eikonal}
+        Vehicle:
+          w: ${veh_wei}
+          on_occ_ratio: 0
+          on_render_ratio: ${veh_wei_on_render_ratio}
+        Pedestrian:
+          w: ${veh_wei}
+          on_occ_ratio: 0
+          on_render_ratio: ${veh_wei_on_render_ratio}
+        Cyclist:
+          w: ${veh_wei}
+          on_occ_ratio: 0
+          on_render_ratio: ${veh_wei_on_render_ratio}
+    sparsity:
+      enable_after: ${sparsity_enable_after}
+      class_name_cfgs:
+        Street:
+          key: sdf
+          type: normalized_logistic_density
+          inv_scale: 16.0
+          w: ${w_sparsity}
+          anneal:
+            type: linear
+            start_it: ${sparsity_enable_after}
+            start_val: 0
+            stop_it: ${eval:"${sparsity_anneal_for}+${sparsity_enable_after}"}
+            stop_val: ${w_sparsity}
+            update_every: 100
+    clearance:
+      class_name_cfgs:
+        Street:
+          w: ${clw}
+          beta: ${clbeta}
+          thresh: ${clearance_sdf}
+        Vehicle:
+          w: ${clw}
+          beta: ${clbeta}
+        Pedestrian:
+          w: ${clw}
+          beta: ${clbeta}
+        Cyclist:
+          w: ${clw}
+          beta: ${clbeta}
+    weight_reg:
+      class_name_cfgs:
+        Street:
+          norm_type: 2.0
+          w: 1.0e-6
+        Distant:
+          norm_type: 2.0
+          w: 1.0e-6
+
+  #---------- Optimization and shedulers
+  enable_grad_scaler: true
+
+  num_iters: ${num_iters}
+  scheduler:
+    #---------- exponential
+    type: exponential
+    total_steps: ${training.num_iters}
+    warmup_steps: ${warmup_steps}
+    decay_target_factor: ${min_factor}
+    #---------- cosine
+    # type: warmup_cosine
+    # total_steps: ${training.num_iters}
+    # warmup_steps: ${warmup_steps}
+    # decay_target_factor: ${min_factor}
+    #---------- milestone
+    # type: multistep
+    # milestones: [20000, 30000]
+    # gamma: 0.33
+
+  #---------- Logging and validation
+  i_val: 500      # unit: iters
+  i_backup: -1 # unit: iters
+  i_save: 900     # unit: seconds
+  i_log: 20
+  log_grad: false
+  log_param: false
+
+  ckpt_file: null
+  ckpt_ignore_keys: []
+  ckpt_only_use_keys: null

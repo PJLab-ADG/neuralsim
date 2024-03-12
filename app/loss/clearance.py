@@ -4,8 +4,8 @@
 @brief  SDF near field clearance regularization loss, to prevent too small or even minus near field SDFs (minus near SDF = camera inside shape)
 """
 
-import numbers
 from copy import deepcopy
+from numbers import Number
 from typing import Dict, List, Literal, Union
 
 import torch
@@ -40,48 +40,33 @@ class ClearanceLoss(nn.Module):
         """
         
         super().__init__()
-        if isinstance(class_name_cfgs, numbers.Number):
+        if isinstance(class_name_cfgs, Number):
             class_name_cfgs = {class_name: {'w': class_name_cfgs} for class_name in drawable_class_names}
         else:
             for k, v in class_name_cfgs.items():
-                if isinstance(v, numbers.Number):
+                if isinstance(v, Number):
                     class_name_cfgs[k] = {'w' : v}
         self.class_name_cfgs: Dict[str, ConfigDict] = class_name_cfgs
     
-    def fn_penalty(self, near_sdf: torch.Tensor, beta: float = 1.0, thresh: float = 0.01):
+    def fn_penalty_sdf(self, near_sdf: torch.Tensor, beta: float = 1.0, thresh: float = 0.01):
         mask_in = near_sdf < thresh
         num_pen_pts = mask_in.sum().item()
         # penalty = torch.sigmoid(-beta * near_sdf[mask_in]).mean() if num_pen_pts > 0 else near_sdf.new_zeros([1,])
         penalty = (torch.exp(-beta * (near_sdf[mask_in]-thresh)).sum() / mask_in.numel()) if num_pen_pts > 0 else near_sdf.new_zeros([1,])
         return num_pen_pts, penalty
     
-    def forward_code_single(
-        self, obj: SceneNode, ret: dict, uniform_samples: dict, 
-        sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
-        class_name = ret['class_name']
-        config = deepcopy(self.class_name_cfgs[class_name])
-        w = config.pop('w', None)
-        if (anneal_cfg:=config.pop('anneal', None)) is not None:
-            w = get_anneal_val(it=it, **anneal_cfg)
-        assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
-
-        if ret['volume_buffer']['buffer_type'] == 'empty':
-            return {}
-            
-        near_sdf = ret['details']['near_sdf']
-        _, penalty = self.fn_penalty(near_sdf, **config)
-        loss = w * penalty
-        return {'loss_clearance': loss}
+    def fn_penalty_density(self, near_density: torch.Tensor, ):
+        raise NotImplementedError
     
-    def forward_code_multi(
+    def forward(
         self, 
         scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int, 
         mode: Literal['pixel', 'lidar', 'image_patch'] = ...) -> Dict[str, torch.Tensor]:
         
         ret_losses = {}
         for _, obj_raw_ret in ret['raw_per_obj_model'].items():
-            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
-                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            if obj_raw_ret['volume_buffer']['type'] == 'empty':
+                continue # Skip not rendered models
             class_name = obj_raw_ret['class_name']
             model_id = obj_raw_ret['model_id']
             model = scene.asset_bank[model_id]
@@ -94,12 +79,17 @@ class ClearanceLoss(nn.Module):
                 w = get_anneal_val(it=it, **anneal_cfg)
             assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
             
-            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
+            if obj_raw_ret['volume_buffer']['type'] == 'empty':
                 continue
             
-            near_sdf = obj_raw_ret['details']['near_sdf']
-            _, penalty = self.fn_penalty(near_sdf, **config)
-            
+            if 'near_sdf' in obj_raw_ret['details']:
+                near_sdf = obj_raw_ret['details']['near_sdf']
+                _, penalty = self.fn_penalty_sdf(near_sdf, **config)
+            elif 'near_sigma' in obj_raw_ret['details']:
+                near_sigma = obj_raw_ret['details']['near_sdf']
+                _, penalty = self.fn_penalty_density(near_sigma, **config)
+            else:
+                raise RuntimeError(f"Can not find 'near_sdf' or 'near_density' in details for {class_name}")
             ret_losses[f'loss_clearance.{class_name}'] = w * penalty
         
         return ret_losses

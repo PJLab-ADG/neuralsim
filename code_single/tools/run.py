@@ -87,7 +87,7 @@ if __name__ == "__main__":
     for prefix, sparser in sub_parsers.items():
         if prefix not in tasks:
             continue
-        print(f"=> [Help] Specify {prefix} args with e.g. `--{prefix}.xxx=yyy`")
+        print(f"=> [Help] Specify {prefix} args with e.g. `--{prefix}.xxx=yyy`. This will be passed to {prefix}.py as `--xxx=yyy`")
         for action in sparser.parser._actions:
             # Merge spec configs and skip common configs from subparsers
             if action.dest not in  ['help', 'resume_dir', 'config', 'port', 'ddp', 'outbase', 'device_ids']:

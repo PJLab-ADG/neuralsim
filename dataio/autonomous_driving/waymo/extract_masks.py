@@ -1,6 +1,5 @@
 """
 @file   extract_masks.py
-@author Jianfei Guo, Shanghai AI Lab
 @brief  Extract semantic mask
 
 Using SegFormer, 2021. Cityscapes 83.2%
@@ -42,7 +41,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
     parser = ArgumentParser()
     # Custom configs
-    parser.add_argument('--data_root', type=str, default='/data1/waymo/processed1')
+    parser.add_argument('--data_root', type=str, default='/data1/waymo/processed')
     parser.add_argument('--seq_list', type=str, default=None, help='specify --seq_list if you want to limit the list of seqs')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--ignore_existing', action='store_true')

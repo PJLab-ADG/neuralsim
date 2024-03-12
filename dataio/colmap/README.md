@@ -1,7 +1,7 @@
 
 # [neuralsim] COLMAP-like dataset
 
-This DatasetIO can be used for any dataset collected with COLMAP. 
+This SceneDataset can be used for any dataset collected with COLMAP. 
 
 The directory file structure should be as follows:
 

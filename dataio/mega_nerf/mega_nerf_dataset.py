@@ -8,7 +8,7 @@ import os
 import numpy as np
 from math import ceil
 from zipfile import ZipFile
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple, Union
 
 import torch
 
@@ -16,7 +16,7 @@ from nr3d_lib.utils import load_rgb
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.fields_forest.utils import prepare_dense_grids
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
 def load_mask(path: str):
     with ZipFile(path) as zf:
@@ -25,8 +25,8 @@ def load_mask(path: str):
             keep_mask = torch.load(f, map_location='cpu')
     return keep_mask
 
-class MegaNeRFDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class MegaNeRFDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
     
@@ -144,7 +144,7 @@ class MegaNeRFDataset(DatasetIO):
         self.mask_paths_all = mask_paths_all
         self.n_images = len(self.image_paths_all)
     
-    def get_scenario(self, scene_id: str, should_split_block: True, split_block_cfg: ConfigDict = None) -> Dict[str, Any]:
+    def get_scenario(self, scene_id: str, should_split_block: True, split_block_cfg: dict = None) -> Dict[str, Any]:
         metas = dict(
             n_frames=self.n_images, 
             main_class_name=self.main_class_name
@@ -194,7 +194,7 @@ class MegaNeRFDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images), 
+                global_frame_inds=np.arange(self.n_images), 
             )
         )
         obj = dict(
@@ -210,10 +210,13 @@ class MegaNeRFDataset(DatasetIO):
         )
         return scenario
     
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
+    
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.image_paths_all[frame_index]
         return load_rgb(fpath)
     
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.mask_paths_all[frame_index]
         return load_mask(fpath)

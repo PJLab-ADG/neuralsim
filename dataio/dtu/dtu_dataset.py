@@ -4,19 +4,20 @@
 @brief  Dataset IO for IDR/NeuS/DTU format datasets.
 """
 import os
-import numbers
+from numbers import Number
 import imageio
 import skimage
 import numpy as np
-from typing import Any, Dict, Literal
+from typing import Any, Dict, List, Literal, Tuple, Union
 
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.utils import load_rgb, glob_imgs, get_image_size, cpu_resize
-from nr3d_lib.geometry import decompose_K_Rt_from_P, inverse_transform_matrix_np
+from nr3d_lib.maths import inverse_transform_matrix_np
+from nr3d_lib.graphics.cameras import decompose_intr_c2w_from_proj_np
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
-def load_mask(path, downscale: numbers.Number=1):
+def load_mask(path, downscale: Number=1):
     alpha = imageio.imread(path, as_gray=True)
     alpha = skimage.img_as_float32(alpha)
     if downscale != 1:
@@ -52,8 +53,8 @@ def write_cams(filepath: str, intrs: np.ndarray, c2ws: np.ndarray, normalization
     
     np.savez(filepath, **data_dict)
 
-class DTUDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class DTUDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
 
@@ -117,7 +118,7 @@ class DTUDataset(DatasetIO):
         for scale_mat, world_mat in zip(scale_mats, world_mats):
             P = world_mat @ scale_mat
             P = P[:3, :4]
-            intrinsics, pose = decompose_K_Rt_from_P(P)
+            intrinsics, pose = decompose_intr_c2w_from_proj_np(P)
             cam_center_norms.append(np.linalg.norm(pose[:3,3]))
             intrs_all.append(intrinsics.astype(np.float32))
             c2ws_all.append(pose.astype(np.float32))
@@ -153,7 +154,7 @@ class DTUDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -169,22 +170,25 @@ class DTUDataset(DatasetIO):
         )
         return scenario
 
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
+
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.image_paths[frame_index]
         return load_rgb(fpath)
     
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.mask_paths[frame_index]
         return load_mask(fpath)
 
-    def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.root_dir, self.split, 'depth_wmask' if self.mono_cues_with_mask else 'depth', f'{img_name}.npz')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         depth = np.load(fpath)['arr_0'].astype(np.float32)
         return depth
 
-    def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.root_dir, self.split, 'normal_wmask' if self.mono_cues_with_mask else 'normal', f'{img_name}.jpg')
         assert os.path.exists(fpath), f"Not exist: {fpath}"

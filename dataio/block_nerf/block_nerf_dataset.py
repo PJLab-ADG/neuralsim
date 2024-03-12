@@ -10,29 +10,16 @@ import os
 import json
 import itertools
 import numpy as np
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Union
 
 import torch
 
 from nr3d_lib.utils import load_rgb
 from nr3d_lib.config import ConfigDict
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
-#---------------- Cityscapes semantic segmentation
-cityscapes_classes = [
-    'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
-    'traffic light', 'traffic sign', 'vegetation', 'terrain', 'sky',
-    'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
-    'bicycle'
-]
-cityscapes_classes_ind_map = {cn: i for i, cn in enumerate(cityscapes_classes)}
-
-cityscapes_dynamic_classes = [
-    'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle'
-]
-
-class BlockNeRFDataset(DatasetIO):
+class BlockNeRFDataset(SceneDataset):
     def __init__(self, config:ConfigDict) -> None:
         self.config = config
         self.populate(**config)
@@ -41,6 +28,8 @@ class BlockNeRFDataset(DatasetIO):
         self, root_dir: str, split='train', 
         block_ids: str = None, cam_ids: str = None, exposures_std: float = 1.0, # Assume it's already in a normalized range.
         # exposures_std: float = 0.005307023699206318, # Calculated std()
+        mask_dirname: str = "masks", 
+        mask_taxonomy: Literal['cityscapes', 'ade20k'] = 'cityscapes', 
         ):
         
         self.main_class_name = "Street"
@@ -74,6 +63,8 @@ class BlockNeRFDataset(DatasetIO):
         self.intrs_all: Dict[str, np.ndarray] = {}
         self.hws_all: Dict[str, np.ndarray] = {}
         self.exposures: Dict[str, float] = {}
+        
+        self._populate_mask_settings(mask_dirname=mask_dirname, mask_taxonomy=mask_taxonomy)
         
         # NOTE: Block-nerf-pytorch use OpenGL camera coordiantes
         """
@@ -138,6 +129,87 @@ class BlockNeRFDataset(DatasetIO):
         self.cam_inds_map = {k: np.array(v) for k, v in self.cam_inds_map.items()}
         self.n_images = len(self.img_names)
 
+    def _populate_mask_settings(
+        self, 
+        mask_dirname: str = "masks", 
+        mask_taxonomy: Literal['cityscapes', 'ade20k'] = 'cityscapes', ):
+        self.mask_dirname = mask_dirname
+        self.mask_taxonomy = mask_taxonomy
+        # Taxonomy reference source: mmseg/core/evaluation/class_names.py
+        if self.mask_taxonomy == 'cityscapes':
+            #---------------- Cityscapes semantic segmentation
+            self.semantic_classes = [
+                'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
+                'traffic light', 'traffic sign', 'vegetation', 'terrain', 'sky',
+                'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle',
+                'bicycle'
+            ]
+            
+            self.semantic_dynamic_classes = [
+                'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle'
+            ]
+            self.semantic_free_space_classes = ['sky']
+            self.semantic_human_classes = ['person', 'rider']
+            self.semantic_road_classes = ['road']
+            
+            self.dataset_classes_in_sematic = {
+                'unknwon': ['train'],
+                'Vehicle': ['car', 'truck', 'bus'],
+                'Pedestrian': ['person'],
+                'Sign': ['traffic light', 'traffic sign'],
+                'Cyclist': ['rider', 'motorcycle', 'bicycle']
+            }
+        
+        elif self.mask_taxonomy == 'ade20k':
+            #---------------- ADE20k semantic segmentation
+            self.semantic_classes = [
+                'wall', 'building', 'sky', 'floor', 'tree', 'ceiling', 'road', 'bed ',
+                'windowpane', 'grass', 'cabinet', 'sidewalk', 'person', 'earth',
+                'door', 'table', 'mountain', 'plant', 'curtain', 'chair', 'car',
+                'water', 'painting', 'sofa', 'shelf', 'house', 'sea', 'mirror', 'rug',
+                'field', 'armchair', 'seat', 'fence', 'desk', 'rock', 'wardrobe',
+                'lamp', 'bathtub', 'railing', 'cushion', 'base', 'box', 'column',
+                'signboard', 'chest of drawers', 'counter', 'sand', 'sink',
+                'skyscraper', 'fireplace', 'refrigerator', 'grandstand', 'path',
+                'stairs', 'runway', 'case', 'pool table', 'pillow', 'screen door',
+                'stairway', 'river', 'bridge', 'bookcase', 'blind', 'coffee table',
+                'toilet', 'flower', 'book', 'hill', 'bench', 'countertop', 'stove',
+                'palm', 'kitchen island', 'computer', 'swivel chair', 'boat', 'bar',
+                'arcade machine', 'hovel', 'bus', 'towel', 'light', 'truck', 'tower',
+                'chandelier', 'awning', 'streetlight', 'booth', 'television receiver',
+                'airplane', 'dirt track', 'apparel', 'pole', 'land', 'bannister',
+                'escalator', 'ottoman', 'bottle', 'buffet', 'poster', 'stage', 'van',
+                'ship', 'fountain', 'conveyer belt', 'canopy', 'washer', 'plaything',
+                'swimming pool', 'stool', 'barrel', 'basket', 'waterfall', 'tent',
+                'bag', 'minibike', 'cradle', 'oven', 'ball', 'food', 'step', 'tank',
+                'trade name', 'microwave', 'pot', 'animal', 'bicycle', 'lake',
+                'dishwasher', 'screen', 'blanket', 'sculpture', 'hood', 'sconce',
+                'vase', 'traffic light', 'tray', 'ashcan', 'fan', 'pier', 'crt screen',
+                'plate', 'monitor', 'bulletin board', 'shower', 'radiator', 'glass',
+                'clock', 'flag'
+            ]
+            
+            self.semantic_dynamic_classes = [
+                'person', 'car', 'bus', 'truck', 'van', 'boat', 'airplane', 'ship', 
+                'minibike', 'animal', 'bicycle'
+            ]
+            self.semantic_free_space_classes = ['sky']
+            self.semantic_human_classes = ['person']
+            self.semantic_road_classes = ['road']
+            
+            self.dataset_classes_in_sematic = {
+                'unknwon': ['train'],
+                'Vehicle': ['car', 'bus', 'truck', 'van'],
+                'Pedestrian': ['person'],
+                'Sign': ['traffic light'],
+                'Cyclist': ['minibike', 'bicycle']
+            }
+        
+        else:
+            raise RuntimeError(f"Invalid mask_taxonomy={mask_taxonomy}")
+
+        self.semantic_classes_ind_map = {cn: i for i, cn in enumerate(self.semantic_classes)}
+
     def get_scenario(self, scene_id: str, **kwargs) -> Dict[str, Any]:
         metas = dict(
             n_frames=self.n_images, 
@@ -152,7 +224,7 @@ class BlockNeRFDataset(DatasetIO):
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
                 exposure=self.exposures, 
-                global_frame_ind=np.arange(self.n_images), 
+                global_frame_inds=np.arange(self.n_images), 
             )
         )
         obj = dict(
@@ -168,19 +240,22 @@ class BlockNeRFDataset(DatasetIO):
         )
         return scenario
 
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
+
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.root_dir, self.split, 'rgbs', f"{img_name}.png")
         return load_rgb(fpath) 
 
-    def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.root_dir, self.split, 'depths', f'{img_name}.npz')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         depth = np.load(fpath)['arr_0'].astype(np.float32)
         return depth
 
-    def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.root_dir, self.split, 'normals', f'{img_name}.jpg')
         assert os.path.exists(fpath), f"Not exist: {fpath}"
@@ -198,20 +273,35 @@ class BlockNeRFDataset(DatasetIO):
         arr = np.load(fpath)['arr_0']
         return arr
 
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, nonoccupied_class='sky') -> np.ndarray:
-        raw = self.get_raw_mask(scene_id, camera_id, frame_index)
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True) -> np.ndarray:
+        raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
+        ret = np.ones_like(raw).astype(np.bool8)
+        for cls in self.semantic_free_space_classes:
+            ret[raw==self.semantic_classes_ind_map[cls]] = False
         # [H, W] 
         # Binary occupancy mask on RGB image. 1 for occpied, 0 for not.
-        return (raw.squeeze() != cityscapes_classes_ind_map[nonoccupied_class])
-
-    def get_dynamic_mask(self, scene_id: str, camera_id: str, frame_index: int):
-        raw = self.get_raw_mask(scene_id, camera_id, frame_index)
+        return ret.squeeze()
+    def get_image_semantic_mask_by_type(
+        self, scene_id: str, camera_id: str, 
+        sem_type: Literal['dynamic', 'human', 'road', 'anno_dontcare'], 
+        frame_index: int, *, compress=True) -> np.ndarray:
+        raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.zeros_like(raw).astype(np.bool8)
-        for cls in cityscapes_dynamic_classes:
-            ind = cityscapes_classes_ind_map[cls]
-            ret[raw==ind] = True
-        # [H, W] 
-        # Binary dynamic mask on RGB image. 1 for dynamic object, 0 for static.
+        if sem_type == 'dynamic':
+            for cls in self.semantic_dynamic_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        elif sem_type == 'human':
+            for cls in self.semantic_human_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        elif sem_type == 'road':
+            for cls in self.semantic_road_classes:
+                ind = self.semantic_classes_ind_map[cls]
+                ret[raw==ind] = True
+        else:
+            raise RuntimeError(f"Invalid sem_type={sem_type}")
+        # Binary semantic mask on RGB image. 1 for matched, 0 for not.
         return ret.squeeze()
 
     def get_aabb(self, scene_id: str) -> Dict[str, np.ndarray]:

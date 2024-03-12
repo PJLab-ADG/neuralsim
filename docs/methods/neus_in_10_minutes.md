@@ -29,7 +29,7 @@ https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0
 - Stable training within 10 minutes without necessarily needing mask
 - Worried about your camera pose accuracy ? We can refine them !
 - Worried about your footage quality & consistency ? We have in the wild image embeddings !
-- Worried about geometric distortions like depressions or bulges (凹坑或鼓包) ? We opt to use monocular normal priors !
+- Worried about geometric distortions like depressions or bulges ? We opt to use monocular normal priors !
 - Object-centric, indoor or outdoors ? We can cover them all !
 
 ## Object-centric datasets

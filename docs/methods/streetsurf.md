@@ -15,10 +15,25 @@ The official implementation of "StreetSurf: Extending Multi-view Implicit Surfac
 }
 ```
 
-**Multi-view settings runing at scale**; check out this video [here](https://youtu.be/GEkW5mYd5YY?si=hmXz6cxrACS_Ho1s)
+### Update 20240121: 2x faster training & better quality
+
+
+### Multi-view settings runing at scale
+
+- check out this video [here](https://youtu.be/GEkW5mYd5YY?si=hmXz6cxrACS_Ho1s)
+- training setting: [withmask_withlidar_joint.240219.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml)
+  See all training settings and instructions below.
+
 <img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/3f4fc0bb-937b-471a-83d3-c8e41681f4c5" alt="streetsurf_waymo_static_32" >
 
-**LiDAR-only settings running on all 798 waymo sequences**; check out this video [here](https://youtu.be/u09fZXekEy8?si=kvhKH__Tt2l31d-Y)
+### LiDAR-only settings running on all 798 waymo sequences
+
+- check out this video [here](https://youtu.be/u09fZXekEy8?si=kvhKH__Tt2l31d-Y)
+- training setting: [lidaronly_filterobj.240219.yaml](../../code_single/configs/waymo/streetsurf/lidaronly_filterobj.240219.yaml) 
+  See all training settings and instructions below.
+
+- :pushpin: This enables the background mesh reconstruction step in our ICLR2024 paper [ReSimAD](https://arxiv.org/abs/2309.05527)
+
 <img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/583800ff-42e0-4b9d-ace7-dae43229aa35" alt="streetsurf_waymo_lidaronly_all" >
 
 
@@ -43,13 +58,19 @@ The official implementation of "StreetSurf: Extending Multi-view Implicit Surfac
 
 > NOTE: To use pretrained models for evaluation, you need to specify your local dataset path with `--dataset_cfg.param.root=/path/to/waymo/processed`. Otherwise if you don't want to load GT data, you need to specify `--no_gt` when running `render.py`.
 
+Latest version (Released on 20240121)
+
+
+
+Paper version (Released on 20230814)
+
 | Settings                                                     | Config file & Pretrained models                              | Camera images                        | Sky mask               | LiDAR ranges                | Monocular normals      | Monocular depths       |
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------ | ---------------------- | --------------------------- | ---------------------- | ---------------------- |
-| Multi-view reconstruction with LiDAR                         | [withmask_withlidar.230814.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml)<br/>Pretrained: [[baidu:`h6he`]](https://pan.baidu.com/s/1VwFdapaoK1wVZLPqN5zsXA)\|[[google]](https://drive.google.com/file/d/13OOE452fGd3-GruI0rvRRPXjXnKG1L2k/view?usp=sharing)  | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes | :white_check_mark: 5 LiDARs |                        |                        |
-| Multi-view reconstruction with LiDAR<br />(:star: <u>smoother surfaces</u>) | [withmask_withlidar_withnormal.230814.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar_withnormal.230814.yaml) | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes | :white_check_mark: 5 LiDARs | :white_check_mark: Yes |                        |
-| Multi-view reconstruction with LiDAR<br />(<u>no mask</u>)   | [nomask_withlidar.230814.yaml](../../code_single/configs/waymo/streetsurf/nomask_withlidar.230814.yaml) | :white_check_mark: 3 frontal cameras |                        | :white_check_mark: 5 LiDARs |                        |                        |
-| Multi-view reconstruction <u>without LiDAR</u><br />(i.e. multi-view posed images + inferred cues) | [withmask_nolidar.230814.yaml](../../code_single/configs/waymo/streetsurf/withmask_nolidar.230814.yaml) | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes |                             | :white_check_mark: Yes | :white_check_mark: Yes |
-| <u>LiDAR only</u> reconstruction<br />(i.e. from LiDAR ranges to surfaces) | [lidaronly_filterobj.230814.yaml](../../code_single/configs/waymo/streetsurf/lidaronly_filterobj.230814.yaml) <br />:pushpin: NOTE: Applicable to all 798 training sequences in Waymo Open Dataset - Perception split |                                      |                        | :white_check_mark: 5 LiDARs |                        |                        |
+| Multi-view reconstruction with LiDAR                         | [withmask_withlidar_joint.240219.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml)<br/>Pretrained: [[baidu:`h6he`]](https://pan.baidu.com/s/1VwFdapaoK1wVZLPqN5zsXA)\|[[google]](https://drive.google.com/file/d/13OOE452fGd3-GruI0rvRRPXjXnKG1L2k/view?usp=sharing) | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes | :white_check_mark: 5 LiDARs |                        |                        |
+| Multi-view reconstruction with LiDAR<br />(:star: <u>smoother surfaces</u>) | [withmask_withlidar_withnormal.240219.yaml](../../code_single/configs/waymo/streetsurf/withmask_withlidar_withnormal.240219.yaml) | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes | :white_check_mark: 5 LiDARs | :white_check_mark: Yes |                        |
+| Multi-view reconstruction with LiDAR<br />(<u>no mask</u>)   | [nomask_withlidar_joint.240219.yaml](../../code_single/configs/waymo/streetsurf/nomask_withlidar_joint.240219.yaml) | :white_check_mark: 3 frontal cameras |                        | :white_check_mark: 5 LiDARs |                        |                        |
+| Multi-view reconstruction <u>without LiDAR</u><br />(i.e. multi-view posed images + inferred cues) | [withmask_nolidar.240219.yaml](../../code_single/configs/waymo/streetsurf/withmask_nolidar.240219.yaml) | :white_check_mark: 3 frontal cameras | :white_check_mark: Yes |                             | :white_check_mark: Yes | :white_check_mark: Yes |
+| <u>LiDAR only</u> reconstruction<br />(i.e. from LiDAR ranges to surfaces) | [lidaronly_filterobj.240219.yaml](../../code_single/configs/waymo/streetsurf/lidaronly_filterobj.240219.yaml) <br />:pushpin: NOTE: Applicable to all 798 training sequences in Waymo Open Dataset - Perception split<br />:pushpin: NOTE: This enables the background mesh reconstruction step in our ICLR2024 paper [ReSimAD](https://arxiv.org/abs/2309.05527) |                                      |                        | :white_check_mark: 5 LiDARs |                        |                        |
 
 ## Instructions
 
@@ -130,7 +151,7 @@ Taking an example of a single machine with 4 GPUs:
 ```shell
 python -m torch.distributed.launch --nproc_per_node=4 \
 code_single/tools/train.py \
---config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml \
 --ddp
 ```
 
@@ -169,7 +190,7 @@ Taking an example of a 2 nodes with 4 GPUs each (i.e. 8 GPUs in total):
 python -m torch.distributed.launch --nnodes=2 --nproc_per_node=4 \
 --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --node_rank=$RANK \
 code_single/tools/train.py \
---config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml \
 --ddp 
 ```
 
@@ -476,7 +497,7 @@ The monocular normals supervision is implemented with `MonoNormalLoss`.
 
 - Monocular normals supervision can be applied in both `train_step_pixel` and `train_step_image_patch`, while monocular depth supervision is only suitable in `train_step_image_patch`, as it requires regular image patches to estimate the scale and shift of the inferred monocular depths. Using unorganized pixels typically fails to produce reasonable estimation of scales and shifts.
 
-The monocular depths supervision is implemented with `MonoSSIDepthLoss`, which is modified from the original [MonoSDF](https://github.com/autonomousvision/monosdf) implementation.
+The monocular depths supervision is implemented with `MonoDepthLoss`, which is modified from the original [MonoSDF](https://github.com/autonomousvision/monosdf) implementation.
 
 - For street views, the estimation of monocular depths on distant views and the sky is extremely unreliable, thus it should be masked out when estimating scales and shifts (controlled by `ignore_mask_list`). 
   - However, we can only rely on the predicted (volume-rendered) close-range mask to accomplish this, as there are no other straightforward methods to infer which areas are close-range and which are distant views. The volume-rendered masks are often excessively expanded by several pixels, therefore mask erosion is required before use (controlled by `mask_erode`). 

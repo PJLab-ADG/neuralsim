@@ -1,0 +1,93 @@
+# A storage of the automatically uploaded assets in github
+
+# 3 of 360v2 dataset
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/ce6ec6fc-2d0e-4c2b-9d91-d1b992d13ff4
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/32d6fe6f-39a1-403d-8b12-16d26e092375
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/29fff4d9-c70d-4097-8f12-0bc307d339f3
+
+# gundam
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/618ff7ab-d769-47c4-9c26-bc54674e0cb2" alt="teaser_training_bmvs_gundam" width="320">
+
+# village house
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c216407-0c60-47ae-b1c1-f3ba66c67cc2" alt="teaser_training_bmvs_village_house" width="320">
+
+# replica scan1 (new)
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/a8ab59a3-c6e2-464e-aeda-0684bf18dbb6" width="320">
+
+# teaser_categorical.mp4
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/b557570f-0f88-4c55-b46d-a6d5cf7f4e45" width="320">
+
+# teaser seg100613
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7ddfe845-013c-479a-81a6-066bd04cf97c"></video>
+
+# teaser sensor simulation
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/fa6e37e1-48eb-434a-89e8-9b1c230ce50d"></video>
+
+# teaser mix
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/e2f0b02e-86f0-4c06-85ce-58980e6bbf96"></video>
+
+# teaser manipulate
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/c130ab03-7b8a-4068-8c2f-9c5bea219e6d"></video>
+
+# teaser multi-verse
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/13ed4e86-bf20-45e1-97bb-55a23645da97" alt="teaser_seg767010_multiverse"></video>
+
+# teaser_seg767010_style
+<video src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/206e8024-f5f9-40ca-85fe-19841fb901b7" alt="teaser_seg767010_style"></video>
+
+# img seg100613_ds=4_withmesh
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c1767c6-6eae-41c4-a60d-2eb74ff4c4c9" alt="seg100613_ds=4_withmesh" width="640">
+
+# [visualization] video mesh & cam & lidar
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/42080c6e-6bde-4ecf-8d42-55b5fddf7be9
+
+# [visualization] video lidar pcl
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/b502d393-dcf1-4a87-ba0f-bfa7eae26eee
+
+# [streetsurf] waymo static_32
+<img src="https://github.com/PJLab-ADG/neuralsim/assets/25529198/3f4fc0bb-937b-471a-83d3-c8e41681f4c5" alt="streetsurf_waymo_static_32" >
+
+# [streetsurf] lidar_only all waymo
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/583800ff-42e0-4b9d-ace7-dae43229aa35
+
+# [streetsurf] An example of rendering with mesh
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/7c1767c6-6eae-41c4-a60d-2eb74ff4c4c9
+
+# [neuralsim] render video seg965324
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/dbd7854e-a9db-48be-a23c-61e3592f8faf
+
+# [neuralsim] lens dirt seg1009661
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/62d10c4a-e8c1-4c22-be79-ca5622d6e0f1
+-> screeshot
+![lens_dirt_1009661](https://github.com/PJLab-ADG/neuralsim/assets/25529198/91cd9908-9a14-4766-8b5a-983d55ba671b)
+
+# [neuralsim] lens flare seg938501
+https://github.com/PJLab-ADG/neuralsim/assets/25529198/5e88aed0-d271-4d63-bfea-08e700cd8047
+-> screenshot
+![lens_flare_9385013](https://github.com/PJLab-ADG/neuralsim/assets/25529198/c626b905-e50b-4977-830a-83f255a12cac)
+
+#---- Deprecated: stored in private `neuralsim_dev` repo.
+# gundam
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/6755fb78-4103-41c0-b25e-74e78f11ee00
+# gundam large text
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/e46a21db-f564-461e-906e-af0a9a77d7ad
+# statue
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/87ff0d2c-4cd1-416e-b125-e7b5fd72f221
+# village house
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/5a922e08-5a45-400a-aa53-b3c08e87b1a8
+# village house large text
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/a671cf1e-ece0-4ee3-9131-6417cfb8e77e
+# archway
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/0e335e09-31db-4e06-abad-34f3738088cc
+# replica scan1
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/f41d541d-c047-4aaf-8b4c-54c6e61862fc
+# replica scan1 (new)
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/2791e214-451f-4244-8594-18adbff62edf
+# teaser_categorical.mp4
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/f3d99126-d228-4964-97ad-c12563998df7
+# teaser seg100613
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/294bbdd3-e1e0-4ca7-8779-44e36f806f4a
+# teaser 767 mix 
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/334d521d-1266-49a7-aa04-034f76a8c730
+# teaser manipulate
+https://github.com/PJLab-ADG/neuralsim_dev/assets/25529198/6e7aad96-a9c4-4618-833a-19b564edbfd5

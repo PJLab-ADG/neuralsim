@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.render.pack_ops import packed_sum
+from nr3d_lib.graphics.pack_ops import packed_sum
 from nr3d_lib.models.annealers import get_annealer
 
 from app.resources import Scene
@@ -18,7 +18,7 @@ from app.resources import Scene
 class MaskEntropyRegLoss(nn.Module):
     def __init__(
         self, 
-        w: float, anneal: ConfigDict = None, 
+        w: float, anneal: dict = None, 
         mode: str='crisp_cr', eps: float = 1.0e-5, 
         drawable_class_names: List[str] = [], 
         enable_after: int = 0) -> None:
@@ -28,7 +28,7 @@ class MaskEntropyRegLoss(nn.Module):
 
         Args:
             w (float): Loss weight.
-            anneal (ConfigDict, optional): Configuration for weight annealing. Defaults to None.
+            anneal (dict, optional): Configuration for weight annealing. Defaults to None.
             mode (str, optional): The mode of entropy loss. Defaults to 'crisp_cr'.
             eps (float, optional): Numerical safety epsilon. Defaults to 1.0e-5.
             drawable_class_names (List[str], optional): All trainable model class names (currently not used). Defaults to [].
@@ -60,8 +60,8 @@ class MaskEntropyRegLoss(nn.Module):
 
             def volume_render_mask(buffer: dict):
                 mask = torch.zeros(rays_prefix, device=scene.device, dtype=torch.float)
-                if buffer['buffer_type'] != 'empty':
-                    mask.index_put_((buffer['ray_inds_hit'],), packed_sum(
+                if buffer['type'] != 'empty':
+                    mask.index_put_((buffer['rays_inds_collect'],), packed_sum(
                         buffer['vw_in_total'], # NOTE: Should use `vw_in_total` instead of `vw`
                         buffer['pack_infos_collect']))
                 return mask

@@ -5,20 +5,20 @@
 """
 
 import os
-import numbers
+from numbers import Number
 import imageio
 import skimage
 import numpy as np
 from glob import glob
-from typing import Any, Dict, Literal
+from typing import Any, Dict, List, Literal, Union
 
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.geometry import decompose_K_Rt_from_P
 from nr3d_lib.utils import load_rgb, get_image_size, cpu_resize
+from nr3d_lib.graphics.cameras import decompose_intr_c2w_from_proj_np
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
-def load_mask(path, downscale: numbers.Number=1):
+def load_mask(path, downscale: Number=1):
     alpha = np.load(path)
     if downscale != 1:
         H, W, _ = alpha.shape
@@ -27,8 +27,8 @@ def load_mask(path, downscale: numbers.Number=1):
 
     return object_mask
 
-class MonoSDFDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class MonoSDFDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
 
@@ -67,7 +67,7 @@ class MonoSDFDataset(DatasetIO):
         for scale_mat, world_mat in zip(scale_mats, world_mats):
             P = world_mat @ scale_mat
             P = P[:3, :4]
-            intrinsics, pose = decompose_K_Rt_from_P(P)
+            intrinsics, pose = decompose_intr_c2w_from_proj_np(P)
             intrinsics, pose = intrinsics.astype(np.float32), pose.astype(np.float32)
             
             if center_crop_type == 'center_crop_for_replica':
@@ -122,7 +122,7 @@ class MonoSDFDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -138,20 +138,23 @@ class MonoSDFDataset(DatasetIO):
         )
         return scenario
 
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
+
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.image_paths[frame_index]
         return load_rgb(fpath)
     
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.mask_paths[frame_index]
         return load_mask(fpath)
         
-    def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.mono_depth_paths[frame_index]
         depth = np.load(fpath).astype(np.float32)
         return depth # [H, W]
     
-    def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.mono_normal_paths[frame_index]
         normal = np.load(fpath).astype(np.float32)* 2.-1. # To [-1,1]
         return np.moveaxis(normal, 0, -1) # [H, W, 3]

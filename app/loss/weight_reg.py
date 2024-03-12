@@ -4,8 +4,8 @@
 @brief  Network weight regularization loss
 """
 
-import numbers
 from copy import deepcopy
+from numbers import Number
 from typing import Dict, List, Union
 
 import torch
@@ -35,11 +35,11 @@ class WeightRegLoss(nn.Module):
         
         super().__init__()
         
-        if isinstance(class_name_cfgs, numbers.Number):
+        if isinstance(class_name_cfgs, Number):
             class_name_cfgs = {class_name: {'w': class_name_cfgs} for class_name in drawable_class_names}
         else:
             for k, v in class_name_cfgs.items():
-                if isinstance(v, numbers.Number):
+                if isinstance(v, Number):
                     class_name_cfgs[k] = {'w' : v}
         self.class_name_cfgs: Dict[str, ConfigDict] = class_name_cfgs
     
@@ -49,8 +49,8 @@ class WeightRegLoss(nn.Module):
         ret_losses = {}
         
         for _, obj_raw_ret in ret['raw_per_obj_model'].items():
-            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
-                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            if obj_raw_ret['volume_buffer']['type'] == 'empty':
+                continue # Skip not rendered models
             class_name = obj_raw_ret['class_name']
             model_id = obj_raw_ret['model_id']
             model = scene.asset_bank[model_id]

@@ -17,6 +17,7 @@
 import os
 import sys
 
+
 def set_env(depth: int):
     # Add project root to sys.path
     current_file_path = os.path.abspath(__file__)
@@ -26,6 +27,8 @@ def set_env(depth: int):
     if project_root_path not in sys.path:
         sys.path.append(project_root_path)
         print(f"Added {project_root_path} to sys.path")
+
+
 set_env(2)
 
 import torch
@@ -33,25 +36,25 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import dash
-import dash_bootstrap_components as dbc # pip install dash-bootstrap-components
-import dash_ag_grid as dag # pip install dash-ag-grid
+import dash_bootstrap_components as dbc  # pip install dash-bootstrap-components
+import dash_ag_grid as dag  # pip install dash-ag-grid
 import torch.nn.functional as nn_f
 from dash import dcc, html, callback, ctx
-from dash.dependencies import Input, Output, State
+from dash.dependencies import Input, Output, State, ALL
 
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.profile import Profiler, profile
-from nr3d_lib.render.sphere_trace import SphereTracer, DenseGrid
-from nr3d_lib.render.volume_graphics import packed_alpha_to_vw, ray_alpha_to_vw
+from nr3d_lib.graphics.nerf import packed_alpha_to_vw, ray_alpha_to_vw
 from nr3d_lib.models.spatial.aabb import AABBSpace
-from nr3d_lib.models.spatial_accel import OccupancyGridEMA
+from nr3d_lib.models.accelerations import OccGridEma
+from nr3d_lib.models.grid_encodings.lotd import lotd
 
 from app.resources import load_scenes_and_assets
 from app.resources.observers import Camera
 from app.renderers import SingleVolumeRenderer
 
 
-device = torch.device("cuda")
+device = torch.device('cuda')
 torch.set_grad_enabled(False)
 
 scene = None
@@ -65,7 +68,10 @@ fg_query_cfg = None
 x = None
 y = None
 
-sphere_trace_cfg = ConfigDict(distance_scale=25., min_step=.2, max_march_iters=500, drop_alive_rate=0.)
+sphere_trace_cfg = ConfigDict(distance_scale=30., min_step=.2, hit_threshold=1e-3,
+                              max_march_iters=500, drop_alive_rate=0., tail_sample_threshold = 20000,
+                              tail_sample_step_size = None)
+
 
 def Header(name, app):
     title = html.H2(name, style={"margin-top": 5})
@@ -89,8 +95,7 @@ def img_to_fig(img: torch.Tensor):
     return fig
 
 
-@profile
-def render(cam, sphere_trace=False):
+def render(cam, sphere_trace=False, return_channel="rgb"):
     global renderer_ret
     if sphere_trace:
         bypass_ray_query_cfg = ConfigDict({
@@ -99,12 +104,17 @@ def render(cam, sphere_trace=False):
                 "query_param": ConfigDict(**sphere_trace_cfg, debug=True),
             })
         })
-        renderer_ret = renderer.render(scene, observer=cam, render_per_obj=True, rayschunk=0,
-                                       bypass_ray_query_cfg=bypass_ray_query_cfg)
+        renderer_ret = renderer.render(scene, observer=cam, render_per_obj_individual=True, rayschunk=0,
+                                       bypass_ray_query_cfg=bypass_ray_query_cfg,
+                                       with_normal=return_channel == "normal", only_cr=True)
     else:
-        renderer_ret = renderer.render(scene, observer=cam, render_per_obj=True, 
-                                       rayschunk=args.rayschunk)
-    return renderer_ret["rendered"]["rgb_volume"].reshape(cam.intr.H, cam.intr.W, 3)
+        renderer_ret = renderer.render(scene, observer=cam, render_per_obj_individual=True,
+                                       rayschunk=args.rayschunk,
+                                       with_normal=return_channel == "normal", only_cr=True)
+    if return_channel == "rgb":
+        return renderer_ret["rendered"]["rgb_volume"].reshape(cam.intr.H, cam.intr.W, 3)
+    elif return_channel == "normal":
+        return (renderer_ret["rendered"]['normals_volume'] / 2 + 0.5).reshape(cam.intr.H, cam.intr.W, 3)
 
 
 def query_sdf(pts: torch.Tensor):
@@ -134,7 +144,7 @@ def color_sdf(d: torch.Tensor, include_iso=True):
     return colors
 
 
-def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, near: float, far: float,
+def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, rays_ts: torch.Tensor, near: float, far: float,
              n: int, plot_n: bool = False, plot_slope: bool = False):
     rays_o, rays_d = scene.convert_rays_in_node(ray_o[None], ray_d[None], obj)
     rays_o, rays_d = obj_space.normalize_rays(rays_o, rays_d)
@@ -152,10 +162,11 @@ def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, near: flo
 
     fig.add_trace(go.Scatter(x=t, y=d, mode='lines', name="SDF", showlegend=False))
     if plot_n:
-        fig.add_trace(go.Scatter(x=t, y=nablas, mode='lines', name="SDF Grad", yaxis="y2"))
+        fig.add_trace(go.Scatter(x=t, y=nablas, mode='lines', name="SDF Grad", yaxis="y2",
+                                 visible='legendonly'))
     if plot_slope:
         fig.add_trace(go.Scatter(x=t, y=np.abs(np.gradient(d, t)), mode='lines', name="SDF Slope",
-                                 yaxis="y2"))
+                                 yaxis="y2", visible='legendonly'))
     fig.update_xaxes(title="Depth", type='linear',
                      range=[rays_tested["near"][0].item(), rays_tested["far"][0].item()])
     fig.update_yaxes(title="SDF", type='linear', range=[-0.03, 0.03])
@@ -164,19 +175,20 @@ def plot_sdf(fig: go.Figure, ray_o: torch.Tensor, ray_d: torch.Tensor, near: flo
                       yaxis2=dict(anchor="x", overlaying="y", side="right", range=[-0.05, 1.05]))
 
 
-def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tensor, ray_d: torch.Tensor):
+def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tensor, ray_d: torch.Tensor, rays_ts: torch.Tensor):
     rays_o, rays_d = scene.convert_rays_in_node(ray_o[None], ray_d[None], obj)
     rays_o, rays_d = obj_space.normalize_rays(rays_o, rays_d)
-    rays_tested = obj_space.ray_test(rays_o, rays_d, camera.near, camera.far, normalized=True)
-
+    
+    rays_extra_data = dict(rays_ts=rays_ts)
     if scene.image_embeddings is not None:
-        rays_fi = torch.tensor([camera.i], device=device)
-        rays_tested["rays_h_appear_embed"] = scene.image_embeddings[camera.id](rays_fi)
+        # rays_ts = torch.tensor([camera.i], device=device)
+        rays_extra_data['rays_h_appear'] = scene.image_embeddings[camera.id](rays_ts, mode='interp')
+    rays_tested = obj_space.ray_test(rays_o, rays_d, camera.near, camera.far, normalized=True, **rays_extra_data)
 
-    volume_buffer = obj.model._ray_query_march_occ_multi_upsample(
+    volume_buffer, details = obj.model._ray_query_march_occ_multi_upsample(
         rays_tested, with_normal=False, forward_inv_s=fg_query_cfg["forward_inv_s"],
-        debug_query_data=(debug_query_data:={}), **fg_query_cfg["query_param"])
-    if volume_buffer["buffer_type"] == "empty":
+        debug_query_data=(debug_query_data := {}), **fg_query_cfg["query_param"])
+    if volume_buffer['type'] == "empty":
         return fig
 
     if "coarse" in debug_query_data:
@@ -192,8 +204,8 @@ def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tens
                                  name=f"{n} Ray-march Samples", mode='markers',
                                  marker=dict(color="gray")))
         fig.add_trace(go.Bar(x=debug_query_data["ray_march"]["depth"].cpu().numpy(),
-                                 y=debug_query_data["ray_march"]["pdf"].cpu().numpy(),
-                                 name="Ray-march PDF", yaxis="y2"))
+                             y=debug_query_data["ray_march"]["pdf"].cpu().numpy(),
+                             name="Ray-march PDF", yaxis="y2"))
     if "fine" in debug_query_data:
         sample_stage_colors = [
             "red" if s == 1 else "orange" if s == 2 else "yellow" if s == 3 else "green"
@@ -207,7 +219,7 @@ def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tens
 
     sample_depths = volume_buffer["t"].flatten()
     sample_alphas = volume_buffer["opacity_alpha"].flatten()
-    if volume_buffer["buffer_type"] == 'batched':
+    if volume_buffer['type'] == 'batched':
         sample_weights = ray_alpha_to_vw(sample_alphas)
     else:
         sample_weights = packed_alpha_to_vw(sample_alphas, volume_buffer["pack_infos_hit"])
@@ -233,25 +245,56 @@ def plot_volume_render_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tens
                                  line=go.scatter.Line(color="indianred", width=3)))
 
 
-def plot_sphere_trace_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tensor, ray_d: torch.Tensor):
+def plot_sphere_trace_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tensor, ray_d: torch.Tensor, rays_ts: torch.Tensor):
     rays_o, rays_d = scene.convert_rays_in_node(ray_o[None], ray_d[None], obj)
     rays_o, rays_d = obj_space.normalize_rays(rays_o, rays_d)
     near = camera.near
     far = camera.far
-    
-    ray_tested = obj_space.ray_test(rays_o, rays_d, near, far, normalized=True)
-    tracer = SphereTracer(DenseGrid(*obj_occ.resolution, obj_occ.occ_grid), **sphere_trace_cfg)
-    rays_hit = tracer.trace(ray_tested, obj_model.forward_sdf,
-                            print_debug_log=True, debug_trace_data=(trace_data := []))
 
+    rays_extra_data = dict(rays_ts=rays_ts)
+    if scene.image_embeddings is not None:
+        # rays_ts = torch.tensor([camera.i], device=device)
+        rays_extra_data['rays_h_appear'] = scene.image_embeddings[camera.id](rays_ts, mode='interp')
+    ray_tested = obj_space.ray_test(rays_o, rays_d, near, far, normalized=True, **rays_extra_data)
+    
+    enable_profile_bk = lotd.global_configs["enable_profile"]
+    lotd.configure(enable_profile=False)
+    rays_hit = obj.model.tracer.trace(ray_tested, obj_model.forward_sdf, print_debug_log=True,
+                                      debug_output=(debug_output := {}), debug_replay=True)
+    lotd.configure(enable_profile=enable_profile_bk)
+    
+    for seg in debug_output["segs"]:
+        fig.add_vrect(
+            x0=seg[0].item(), x1=seg[1].item(),
+            fillcolor="LightSalmon", opacity=0.5,
+            layer="below", line_width=0,
+        )
+
+    trace_data = debug_output.get("trace_data", [])
     if (len(trace_data) > 0):
         trace_depths = np.array([
             trace_data[i]["rays_alive"]["t"][0].item()
             for i in range(len(trace_data))
         ])
         trace_sdfs = np.array([trace_data[i]["d"][0].item() for i in range(len(trace_data))])
-        trace_debug_status = [
-            ["ALIVE", "HIT", "OUT"][trace_data[i]["rays_alive"]["debug_status"][0].item()]
+        trace_n_steps = [
+            trace_data[i]["rays_alive"]["n_steps"][0].item()
+            for i in range(len(trace_data))
+        ]
+        trace_status = [
+            ["ALIVE", "HIT", "OUT"][trace_data[i]["rays_alive"]["status"][0].item()]
+            for i in range(len(trace_data))
+        ]
+        trace_hit_region_infos = np.array([
+            trace_data[i]["rays_alive"]["hit_region_infos"][0].cpu().numpy()
+            for i in range(len(trace_data))
+        ])
+        trace_seg_idxs = [
+            trace_data[i]["rays_alive"]["seg_idxs"][0].item()
+            for i in range(len(trace_data))
+        ]
+        trace_seg_end_idxs = [
+            trace_data[i]["rays_alive"]["seg_end_idxs"][0].item()
             for i in range(len(trace_data))
         ]
         trace_debug_flags = [
@@ -262,15 +305,26 @@ def plot_sphere_trace_samples(fig: go.Figure, camera: Camera, ray_o: torch.Tenso
             rays_hit_d = obj_model.forward_sdf(rays_hit["pos"])
             trace_depths = np.concatenate([trace_depths, rays_hit["t"].cpu().numpy()])
             trace_sdfs = np.concatenate([trace_sdfs, rays_hit_d["sdf"].cpu().numpy()])
-            trace_debug_status += ["HIT"]
+            trace_n_steps += [rays_hit["n_steps"][0].item()]
+            trace_status += ["HIT*"]
             trace_debug_flags += [255]
+            trace_hit_region_infos = np.concatenate([
+                trace_hit_region_infos,
+                np.zeros_like(trace_hit_region_infos[:1])
+            ])
+            trace_seg_idxs += [-1]
+            trace_seg_end_idxs += [-1]
 
         for i in range(min(50, trace_depths.shape[0])):
-            print(f"{trace_depths[i]}\t{trace_sdfs[i]}\t{trace_debug_status[i]}\t{trace_debug_flags[i]}")
+            print(
+                f"{trace_n_steps[i]}\t{trace_depths[i]:.4f}\t{trace_sdfs[i]:.5f}\t{trace_status[i]}\t"
+                f"{trace_debug_flags[i]}\t{trace_hit_region_infos[i][0]:.4f}\t{trace_hit_region_infos[i][1]:.4f}\t"
+                f"{trace_hit_region_infos[i][2]:.4f}\t{trace_hit_region_infos[i][3]:.4f}\t"
+                f"{trace_seg_idxs[i]}\t{trace_seg_end_idxs[i]}")
         fig.add_trace(go.Scatter(x=trace_depths, y=trace_sdfs,
-                                name=f"{len(trace_depths)} Trace Samples", mode='markers',
-                                marker={"color": list(range(len(trace_depths)))}))
-    
+                                 name=f"{len(trace_depths)} Trace Samples", mode='markers',
+                                 marker={"color": list(range(len(trace_depths)))}))
+
     fig.update_layout(yaxis2=dict(anchor="x", overlaying="y", side="right", range=[-0.05, 1.05]))
     if rays_hit["idx"].numel() > 0:
         fig.add_trace(go.Scatter(x=[rays_hit["t"][0].item()] * 2, y=[0., 1.],
@@ -310,7 +364,7 @@ class SlicePlane:
                 (slice_img_y + 1.) * self.length / 2.
             ], dim=-1)
         self.img_pts = (self.rot * img_local_pts[..., None, :]).sum(-1) + self.origin
-    
+
     def project(self, pts: torch.Tensor):
         local_pts = (self.rot.t() * (pts - self.origin)[..., None, :]).sum(dim=-1)
         if self.vertical:
@@ -355,7 +409,7 @@ def render_slice(camera: Camera, rays_o: torch.Tensor, rays_d: torch.Tensor, sli
 
     slice_img_pts_in_obj = obj.world_transform.forward(slice_img_pts, inv=True)
     slice_img_pts_in_obj = obj_space.normalize_coords(slice_img_pts_in_obj)
-    
+
     slice_pts_mask = torch.logical_and(slice_img_pts_in_obj >= -1.,
                                        slice_img_pts_in_obj <= 1.).all(-1)
     slice_pts_occ_mask = obj_occ.query(slice_img_pts_in_obj)
@@ -371,31 +425,32 @@ def render_slice(camera: Camera, rays_o: torch.Tensor, rays_d: torch.Tensor, sli
     if perspective_warp:
         if vertical:
             slice_fig.add_shape(type="line", xref="x", yref="y",
-                    x0=0, y0=(slice_y + .5) / camera.intr.H * pix_width,
-                    x1=pix_length - 1, y1=(slice_y + .5) / camera.intr.H * pix_width,
-                    line={'color': 'LightSeaGreen', 'width': 1})
+                                x0=0, y0=(slice_y + .5) / camera.intr.H * pix_width,
+                                x1=pix_length - 1, y1=(slice_y + .5) / camera.intr.H * pix_width,
+                                line={'color': 'LightSeaGreen', 'width': 1})
         else:
             slice_fig.add_shape(type="line", xref="x", yref="y",
-                    x0=(slice_x + .5) / camera.intr.W * pix_width, y0=0,
-                    x1=(slice_x + .5) / camera.intr.W * pix_width, y1=pix_length - 1,
-                    line={'color': 'LightSeaGreen', 'width': 1})
+                                x0=(slice_x + .5) / camera.intr.W * pix_width, y0=0,
+                                x1=(slice_x + .5) / camera.intr.W * pix_width, y1=pix_length - 1,
+                                line={'color': 'LightSeaGreen', 'width': 1})
     else:
         origin_pix = slice_plane.project(rays_o[0])
         leftmost_pix = slice_plane.project(rays_o[0] + rays_d[0] * far)
         rightmost_pix = slice_plane.project(rays_o[0] + rays_d[-1] * far)
-        slice_ray_pix = slice_plane.project(rays_o[0] + rays_d[slice_y if vertical else slice_x] * far)
+        slice_ray_pix = slice_plane.project(
+            rays_o[0] + rays_d[slice_y if vertical else slice_x] * far)
         slice_fig.add_shape(type="line", xref="x", yref="y",
-                    x0=origin_pix[0].item(), y0=origin_pix[1].item(),
-                    x1=leftmost_pix[0].item(), y1=leftmost_pix[1].item(),
-                    line={'color': 'Crimson', 'width': 1})
+                            x0=origin_pix[0].item(), y0=origin_pix[1].item(),
+                            x1=leftmost_pix[0].item(), y1=leftmost_pix[1].item(),
+                            line={'color': 'Crimson', 'width': 1})
         slice_fig.add_shape(type="line", xref="x", yref="y",
-                    x0=origin_pix[0].item(), y0=origin_pix[1].item(),
-                    x1=rightmost_pix[0].item(), y1=rightmost_pix[1].item(),
-                    line={'color': 'Crimson', 'width': 1})
+                            x0=origin_pix[0].item(), y0=origin_pix[1].item(),
+                            x1=rightmost_pix[0].item(), y1=rightmost_pix[1].item(),
+                            line={'color': 'Crimson', 'width': 1})
         slice_fig.add_shape(type="line", xref="x", yref="y",
-                    x0=origin_pix[0].item(), y0=origin_pix[1].item(),
-                    x1=slice_ray_pix[0].item(), y1=slice_ray_pix[1].item(),
-                    line={'color': 'LightSeaGreen', 'width': 1})
+                            x0=origin_pix[0].item(), y0=origin_pix[1].item(),
+                            x1=slice_ray_pix[0].item(), y1=slice_ray_pix[1].item(),
+                            line={'color': 'LightSeaGreen', 'width': 1})
     return slice_fig
 
 
@@ -406,8 +461,30 @@ CAMERAS = [
     "camera_FRONT_RIGHT"
 ]
 
+
 def create_app():
     app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
+
+    lotd_config_spec = {
+        "hash_only": {"type": "bool", "label": "Hash only"},
+        "prefetch": {"type": "bool", "label": "Prefetch"},
+        "permute_dydx": {"type": "bool", "label": "Permute dydx"},
+        "calc_dLdx_method": {"type": "int", "label": "Calc dLdx method"},
+        "enable_profile": {"type": "bool", "label": "Enable profile"},
+    }
+
+    lotd_config_controls = [
+        dbc.Row([
+            dbc.Label(val["label"], width=4),
+            dbc.Col(
+                dbc.Switch(id={"type": "lotd-config", "id": key},
+                           value=lotd.global_configs[key]) if val["type"] == "bool"
+                else dbc.Input(id={"type": "lotd-config", "id": key}, type="number",
+                               value=lotd.global_configs[key])
+            )
+        ], className="mb-3")
+        for key, val in lotd_config_spec.items()
+    ]
 
     controls = [
         dbc.Col([
@@ -425,7 +502,7 @@ def create_app():
             dbc.Label("Frame", width="auto"),
             dbc.Row([
                 dbc.Col(dcc.Slider(0, len(scene) - 1, 1, value=0, id='progression',
-                                   marks={0: "0", len(scene) - 1: f"{len(scene) - 1}"}, 
+                                   marks={0: "0", len(scene) - 1: f"{len(scene) - 1}"},
                                    tooltip={"placement": "bottom", "always_visible": False})),
                 dbc.Col(dbc.Input(id="frame_index", type="number", min=0, max=len(scene) - 1, value=0),
                         width=3),
@@ -439,7 +516,7 @@ def create_app():
         ], lg=2, md=4),
     ]
     render_cfg_controls = [
-        html.P("Volume Rendering Config", className="lead"),
+        html.P("Volume Rendering", className="lead"),
         html.Hr(),
         dbc.Row([
             dbc.Label("March Step Size", html_for="march-step-size", width=4),
@@ -460,7 +537,8 @@ def create_app():
         dbc.Row([
             dbc.Label("Fine", html_for="up-samples", width=4),
             dbc.Col(dbc.Input(id="up-samples",
-                              value=",".join([str(val) for val in fg_query_cfg["query_param"]["num_fine"]])
+                              value=",".join([str(val)
+                                             for val in fg_query_cfg["query_param"]["num_fine"]])
                                     if isinstance(fg_query_cfg["query_param"]["num_fine"], list)
                                     else fg_query_cfg["query_param"]["num_fine"]),
                     width=8),
@@ -469,7 +547,7 @@ def create_app():
             dbc.Label("Forward 1/s", html_for="forward-inv-s", width=4),
             dbc.Col(dcc.Slider(800, 60000, 400, value=fg_query_cfg["forward_inv_s"],
                                id="forward-inv-s",
-                               marks={i: str(i) for i in [100, 7500, 15000, 30000, 60000]}, 
+                               marks={i: str(i) for i in [100, 7500, 15000, 30000, 60000]},
                                tooltip={"placement": "bottom", "always_visible": True})),
         ], className="mb-3",),
         dbc.Row([
@@ -485,18 +563,27 @@ def create_app():
                               value=",".join([str(val) for val in fg_query_cfg["query_param"]["upsample_inv_s_factors"]])),
                     width=8),
         ], className="mb-3",),
-        html.P("Sphere Tracing Config", className="lead"),
+        html.P("Sphere Tracing", className="lead"),
         html.Hr(),
         dbc.Row([
             dbc.Label("Distance Scale", html_for="spheretrace-distance-scale", width=4),
-            dbc.Col(dbc.Input(id="spheretrace-distance-scale", value=sphere_trace_cfg["distance_scale"]), width=8),
+            dbc.Col(dbc.Input(id="spheretrace-distance-scale",
+                    value=sphere_trace_cfg["distance_scale"]), width=8),
         ], className="mb-3",),
         dbc.Row([
-            dbc.Label("March Step Size", html_for="spheretrace-min-step", width=4),
-            dbc.Col(dcc.Slider(0.01, 0.4, 0.01,
+            dbc.Label("Min Advance Step", html_for="spheretrace-min-step", width=4),
+            dbc.Col(dcc.Slider(0.001, 0.4, 0.001,
                                value=sphere_trace_cfg["min_step"],
                                id="spheretrace-min-step",
-                               marks={i: str(i) for i in [0.01, 0.1, 0.2, 0.3, 0.4]},
+                               marks={i: str(i) for i in [0.001, 0.01, 0.1, 0.2, 0.3, 0.4]},
+                               tooltip={"placement": "bottom", "always_visible": True})),
+        ], className="mb-3",),
+        dbc.Row([
+            dbc.Label("Hit Thres.", html_for="spheretrace-hit-threshold", width=4),
+            dbc.Col(dcc.Slider(0.0005, 0.01, 0.0005,
+                               value=sphere_trace_cfg["hit_threshold"],
+                               id="spheretrace-hit-threshold",
+                               marks={i: str(i) for i in [0.0005, 0.001, 0.005, 0.01]},
                                tooltip={"placement": "bottom", "always_visible": True})),
         ], className="mb-3",),
         dbc.Row([
@@ -515,6 +602,14 @@ def create_app():
                                marks={i: str(i) for i in [0, 0.25, 0.5, 0.75, 1]},
                                tooltip={"placement": "bottom", "always_visible": True})),
         ], className="mb-3",),
+        dbc.Row([
+            dbc.Label("Tail Sample Thres.", html_for="spheretrace-tail-sample-threshold", width=4),
+            dbc.Col(dbc.Input(id="spheretrace-tail-sample-threshold",
+                    value=sphere_trace_cfg["tail_sample_threshold"]), width=8),
+        ], className="mb-3",),
+        html.P("Lod Module", className="lead"),
+        html.Hr(),
+        *lotd_config_controls,
         dbc.Row(dbc.Spinner(dbc.Col(dbc.Button("Apply", color="primary", id="apply-render-config"),
                                     className="d-grid gap-2")))
     ]
@@ -532,17 +627,17 @@ def create_app():
             {
                 "headerName": "%",
                 "field": "device_duration.ratio",
-                "cellRenderer": 'agSparklineCellRenderer', 
+                "cellRenderer": 'agSparklineCellRenderer',
                 "cellRendererParams": {
                     "sparklineOptions": {
                         "type": 'bar',
                         "fill": '#5470c6',
                         "stroke": '#91cc75',
-                        "highlightStyle": { "fill": '#fac858' },
+                        "highlightStyle": {"fill": '#fac858'},
                         "valueAxisDomain": [0, 100],
                         "paddingOuter": 0,
-                        "padding": { "top": 3, "bottom": 3 },
-                        "axis": { "strokeWidth": 0 },
+                        "padding": {"top": 3, "bottom": 3},
+                        "axis": {"strokeWidth": 0},
                     }
                 },
                 "width": 60
@@ -585,8 +680,18 @@ def create_app():
                 dbc.Col([
                     dbc.Row([
                         dbc.Col(dbc.Card([
-                            dbc.CardHeader("Rendered RGB"),
-                            dbc.CardBody(dcc.Graph(id="graph-rgb"))
+                            dbc.CardHeader("Rendered"),
+                            dbc.CardBody([
+                                dbc.Select(
+                                    id="rendered-channel",
+                                    options=[
+                                        {"label": "RGB", "value": "rgb"},
+                                        {"label": "Normal", "value": "normal"}
+                                    ],
+                                    value="rgb",
+                                ),
+                                dcc.Graph(id="graph-rgb")
+                            ])
                         ]), lg=4),
                         dbc.Col(dbc.Card([
                             dbc.CardHeader("Slice Vertical"),
@@ -630,7 +735,6 @@ def create_app():
         fluid=True,
     )
 
-
     @callback(
         Output("frame_index", "value"),
         Input("progression", "value"),
@@ -656,6 +760,7 @@ def create_app():
         Input("graph-rgb", "clickData"),
         Input("graph-sp-rgb", "clickData"),
         Input("apply-render-config", "n_clicks"),
+        Input("rendered-channel", "value"),
         State("coarse-samples", "value"),
         State("up-samples", "value"),
         State("forward-inv-s", "value"),
@@ -666,26 +771,36 @@ def create_app():
         State("spheretrace-min-step", "value"),
         State("spheretrace-max-march-iters", "value"),
         State("spheretrace-drop-alive-rate", "value"),
+        State("spheretrace-tail-sample-threshold", "value"),
+        State("spheretrace-hit-threshold", "value"),
+        State({"type": "lotd-config", "id": ALL}, "value"),
         State("local", "data"),
     )
     @torch.no_grad()
-    def update_graphs(frame_index, camera_id, perspective_warp, rgb_graph_click, sp_rgb_graph_click,
-                      apply_render_config_click, coarse_samples, up_samples,
+    def update_graphs(frame_index, camera_id, perspective_warp,
+                      rgb_graph_click, sp_rgb_graph_click,
+                      apply_render_config_click, show_channel, coarse_samples, up_samples,
                       forward_inv_s, upsample_inv_s, upsample_inv_s_factors, march_step_size,
                       spheretrace_distance_scale, spheretrace_min_step, spheretrace_max_march_iters,
-                      spheretrace_drop_alive_rate,
-                      local_data):
+                      spheretrace_drop_alive_rate, tail_sample_threshold, hit_threshold,
+                      lotd_configs, local_data):
         global rgb_fig, sp_rgb_fig, x, y
 
         frame_index = min(max(int(frame_index), 0), len(scene))
-        scene.frozen_at(frame_index)
+        scene.slice_at(frame_index)
         camera = scene.get_cameras()[camera_id]
         camera.intr.set_downscale(args.downscale)
-        rays_o, rays_d = camera.get_all_rays()
+        rays_o, rays_d, rays_ts = camera.get_all_rays(return_ts=True)
+        rays_ts = rays_ts.reshape(camera.intr.H, camera.intr.W, -1)
         rays_o = rays_o.reshape(camera.intr.H, camera.intr.W, -1)
         rays_d = rays_d.reshape(camera.intr.H, camera.intr.W, -1)
 
-        if not ctx.triggered or ctx.triggered_id == "frame_index" or ctx.triggered_id == "camera":
+        lotd_configs = dict(zip(lotd_config_spec, lotd_configs))
+        lotd.configure(**lotd_configs)
+
+        if not ctx.triggered or ctx.triggered_id == "frame_index" or ctx.triggered_id == "camera" \
+                or ctx.triggered_id == "lotd-hash-only" or ctx.triggered_id == "lotd-enable-profile" \
+                or ctx.triggered_id == "rendered-channel":
             rgb_fig = None
             sp_rgb_fig = None
         elif ctx.triggered_id == "apply-render-config":
@@ -701,6 +816,8 @@ def create_app():
             sphere_trace_cfg["min_step"] = float(spheretrace_min_step)
             sphere_trace_cfg["max_march_iters"] = int(spheretrace_max_march_iters)
             sphere_trace_cfg["drop_alive_rate"] = float(spheretrace_drop_alive_rate) / 100.
+            sphere_trace_cfg["tail_sample_threshold"] = int(tail_sample_threshold)
+            sphere_trace_cfg["hit_threshold"] = float(hit_threshold)
             rgb_fig = None
             sp_rgb_fig = None
         elif ctx.triggered_id == "graph-rgb":
@@ -711,68 +828,70 @@ def create_app():
             x = sp_rgb_graph_click['points'][0]['x']
             y = sp_rgb_graph_click['points'][0]['y']
             local_data = {"x": x, "y": y}
-        
+
         if x is None:
             if not local_data:
                 x, y = camera.intr.W // 2, camera.intr.H // 2
                 local_data = {"x": x, "y": y}
             else:
                 x, y = local_data["x"], local_data["y"]
-        
+
         profile_grid_data = dash.no_update
         sp_profile_grid_data = dash.no_update
         if rgb_fig is None:
             profiler = Profiler(0, 1).enable()
-            rgb_fig = img_to_fig(render(camera))
+            rgb_fig = img_to_fig(render(camera, return_channel=show_channel))
             profile_grid_data = profiler.get_result().get_statistic("device_duration") \
                 .get_raw_data(sort_by="device_duration")
             for item in profile_grid_data:
                 item["device_duration"]["sum"] = int(item["device_duration"]["sum"] * 100) / 100
-                item["device_duration"]["ratio"] = [int(item["device_duration"]["ratio"] * 10000) / 100]
+                item["device_duration"]["ratio"] = [
+                    int(item["device_duration"]["ratio"] * 10000) / 100]
         if sp_rgb_fig is None:
             profiler = Profiler(0, 1).enable()
-            sp_rgb_fig = img_to_fig(render(camera, True))
+            sp_rgb_fig = img_to_fig(render(camera, True, return_channel=show_channel))
             sp_profile_grid_data = profiler.get_result().get_statistic("device_duration") \
                 .get_raw_data(sort_by="device_duration")
             for item in sp_profile_grid_data:
                 item["device_duration"]["sum"] = int(item["device_duration"]["sum"] * 100) / 100
-                item["device_duration"]["ratio"] = [int(item["device_duration"]["ratio"] * 10000) / 100]
-        
-        print(f"Update inspect slice at {x},{y}")
+                item["device_duration"]["ratio"] = [
+                    int(item["device_duration"]["ratio"] * 10000) / 100]
+
+        # print(f"Update inspect slice at {x},{y}")
         rgb_fig.update_shapes({'visible': False})
         rgb_fig.add_shape(type="line", xref="x", yref="y",
-                x0=x, y0=0,
-                x1=x, y1=camera.intr.H,
-                line={'color': 'LightSeaGreen', 'width': 1})
+                          x0=x, y0=0,
+                          x1=x, y1=camera.intr.H,
+                          line={'color': 'LightSeaGreen', 'width': 1})
         rgb_fig.add_shape(type="line", xref="x", yref="y",
-                x0=0, y0=y,
-                x1=camera.intr.W, y1=y,
-                line={'color': 'LightSeaGreen', 'width': 1})
-        
+                          x0=0, y0=y,
+                          x1=camera.intr.W, y1=y,
+                          line={'color': 'LightSeaGreen', 'width': 1})
+
         sp_rgb_fig.update_shapes({'visible': False})
         sp_rgb_fig.add_shape(type="line", xref="x", yref="y",
-                x0=x, y0=0,
-                x1=x, y1=camera.intr.H,
-                line={'color': 'LightSeaGreen', 'width': 1})
+                             x0=x, y0=0,
+                             x1=x, y1=camera.intr.H,
+                             line={'color': 'LightSeaGreen', 'width': 1})
         sp_rgb_fig.add_shape(type="line", xref="x", yref="y",
-                x0=0, y0=y,
-                x1=camera.intr.W, y1=y,
-                line={'color': 'LightSeaGreen', 'width': 1})
-        
-        slice_hor_fig = render_slice(camera, rays_o, rays_d, x, y, camera.far,
+                             x0=0, y0=y,
+                             x1=camera.intr.W, y1=y,
+                             line={'color': 'LightSeaGreen', 'width': 1})
+
+        slice_hor_fig = render_slice(camera, rays_o, rays_d, rays_ts, x, y, camera.far,
                                      pix_width=2000, pix_length=2000, vertical=False,
                                      perspective_warp=perspective_warp)
-        slice_ver_fig = render_slice(camera, rays_o, rays_d, x, y, camera.far,
+        slice_ver_fig = render_slice(camera, rays_o, rays_d, rays_ts, x, y, camera.far,
                                      pix_width=2000, pix_length=4000, vertical=True,
                                      perspective_warp=perspective_warp)
-        
+
         ray_plot_fig = go.Figure()
-        plot_sdf(ray_plot_fig, rays_o[y, x], rays_d[y, x], camera.near, camera.far, 1000)
-        plot_volume_render_samples(ray_plot_fig, camera, rays_o[y, x], rays_d[y, x])
+        plot_sdf(ray_plot_fig, rays_o[y, x], rays_d[y, x], rays_ts[y, x], camera.near, camera.far, 1000)
+        plot_volume_render_samples(ray_plot_fig, camera, rays_o[y, x], rays_d[y, x], rays_ts[y, x])
 
         sp_plot_fig = go.Figure()
-        plot_sdf(sp_plot_fig, rays_o[y, x], rays_d[y, x], camera.near, camera.far, 1000, True, True)
-        plot_sphere_trace_samples(sp_plot_fig, camera, rays_o[y, x], rays_d[y, x])
+        plot_sdf(sp_plot_fig, rays_o[y, x], rays_d[y, x], rays_ts[y, x], camera.near, camera.far, 1000, True, True)
+        plot_sphere_trace_samples(sp_plot_fig, camera, rays_o[y, x], rays_d[y, x], rays_ts[y, x])
 
         return rgb_fig, sp_rgb_fig, slice_hor_fig, slice_ver_fig, ray_plot_fig, sp_plot_fig, \
             frame_index, profile_grid_data, sp_profile_grid_data, dash.no_update, local_data
@@ -785,6 +904,7 @@ if __name__ == "__main__":
     bc.parser.add_argument("--downscale", type=float, default=1.0)
     bc.parser.add_argument("--rayschunk", type=int, default=65536)
     bc.parser.add_argument("--rayschunk_for_bg", type=int, default=2**16)
+    bc.parser.add_argument("--regenerate_occgrid", type=int)
     args = bc.parse(print_config=False)
 
     scene_bank, asset_bank, _ = load_scenes_and_assets(**args, device=device)
@@ -793,21 +913,47 @@ if __name__ == "__main__":
     obj_model = obj.model
     obj_space: AABBSpace = obj_model.space
 
-    # print("Regenerate Occgrid...")
-    # print("Original resolution: ", obj_model.accel.occ.resolution.tolist())
-    # resolution = (obj.model.accel.occ.resolution * 2).tolist()
-    # obj_model.accel.occ = OccupancyGridEMA(
-    #     resolution, occ_val_fn_cfg=ConfigDict(type='raw_sdf'), occ_thre=1. - 0.002, 
-    #     init_cfg=ConfigDict(num_steps=256, num_pts=2**25, mode='from_net'))
-    # obj_model.accel.occ.initialize(
-    #     val_query_fn=lambda x: obj_model.forward_sdf(x, ignore_update=True)['sdf'],
-    #     **obj_model.accel.occ.init_cfg)
-    
-    obj_occ = obj_model.accel.occ
+    # Sphere tracing config: for waymo street scene
+    if scene.main_class_name == "Street":
+        sphere_trace_cfg = ConfigDict(
+            distance_scale=40.,
+            min_step=.2,
+            max_march_iters=500,
+            drop_alive_rate=0.,
+            tail_sample_threshold=20000,
+            tail_sample_step_size=None,
+            hit_threshold=.01
+        )
 
-    #---------------------------------------------
-    #------------     Renderer     ---------------
-    #---------------------------------------------
+    # Sphere tracing config: for single-object scene
+    if scene.main_class_name == 'Main':
+        sphere_trace_cfg = ConfigDict(
+            distance_scale=1.,
+            min_step=.002,
+            max_march_iters=500,
+            drop_alive_rate=0.,
+            tail_sample_threshold=10000,
+            tail_sample_step_size=None,
+            hit_threshold=1e-4
+        )
+
+    CAMERAS = [cam.id for cam in scene.get_cameras(False)]
+
+    if args.regenerate_occgrid:
+        print("Regenerate Occgrid...")
+        print("Original resolution: ", obj_model.accel.occ.resolution.tolist())
+        resolution = (obj.model.accel.occ.resolution * args.regenerate_occgrid).tolist()
+        obj_model.accel.occ = OccGridEma(
+            resolution, occ_val_fn_cfg=ConfigDict(type='raw_sdf'), occ_thre=1. - 0.002,
+            init_cfg=ConfigDict(num_steps=256, num_pts=2**24, mode='from_net'))
+        obj_model.accel.init(obj_model.query_sdf)
+
+    obj_occ = obj_model.accel.occ
+    obj.model.training_before_per_step(args.training.num_iters)  # Set to last state
+
+    # ---------------------------------------------
+    # ------------     Renderer     ---------------
+    # ---------------------------------------------
     renderer = SingleVolumeRenderer(args.renderer)
     renderer.populate(asset_bank)
     renderer.eval()
@@ -818,8 +964,8 @@ if __name__ == "__main__":
         # NOTE: When training, set all observer's near&far to a larger value
         for obs in scene.get_observers(False):
             obs.near = renderer.config.near
-            obs.far = renderer.config.far
-    
+            obs.far = renderer.config.far or 5.0
+
     fg_query_cfg = obj.model.ray_query_cfg
     fg_query_cfg["forward_inv_s"] = obj.model.forward_inv_s().item()
 

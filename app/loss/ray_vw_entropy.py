@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.render.pack_ops import packed_mean
+from nr3d_lib.graphics.pack_ops import packed_mean
 from nr3d_lib.models.annealers import get_annealer
 
 from app.resources import Scene
@@ -18,7 +18,7 @@ from app.resources import Scene
 class RayVisWeightEntropyRegLoss(nn.Module):
     def __init__(
         self, 
-        w: float, anneal: ConfigDict = None, mode: str='total', 
+        w: float, anneal: dict = None, mode: str='total', 
         drawable_class_names: List[str] = []) -> None:
         super().__init__()
         self.w = w
@@ -28,8 +28,8 @@ class RayVisWeightEntropyRegLoss(nn.Module):
     def fn(self, volume_buffer: dict):
         vw = volume_buffer['vw']
         entropy = -vw*torch.log(vw+1e-8)
-        if (buffer_type:=volume_buffer['buffer_type']) == 'packed':
-            loss = packed_mean(entropy, volume_buffer['pack_infos_hit']).mean()
+        if (buffer_type:=volume_buffer['type']) == 'packed':
+            loss = packed_mean(entropy, volume_buffer['pack_infos_collect']).mean()
         elif buffer_type == 'batched':
             loss = entropy.mean()
         elif buffer_type == 'emtpy':
@@ -37,7 +37,7 @@ class RayVisWeightEntropyRegLoss(nn.Module):
         return loss
     
     def fn_in_total(self, volume_buffer: dict):
-        if volume_buffer['buffer_type'] == 'empty':
+        if volume_buffer['type'] == 'empty':
             return 0
         else:
             vw = volume_buffer['vw_in_total']

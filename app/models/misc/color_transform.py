@@ -15,7 +15,7 @@ from nr3d_lib.utils import torch_dtype
 from nr3d_lib.models.blocks import get_blocks
 
 from app.resources import Scene, SceneNode
-from app.models.base import AssetAssignment, AssetModelMixin
+from app.models.asset_base import AssetAssignment, AssetModelMixin
 
 class ColorTransform(AssetModelMixin, nn.Module):
     assigned_to = AssetAssignment.MISC
@@ -76,5 +76,5 @@ class ColorTransform(AssetModelMixin, nn.Module):
         return rgbs_output.to(rgbs.dtype)
 
     @classmethod
-    def compute_model_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
+    def asset_compute_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
         return f"{cls.__name__}#{scene.id}"

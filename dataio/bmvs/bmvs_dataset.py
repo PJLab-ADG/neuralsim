@@ -6,16 +6,16 @@
 
 import os
 import numpy as np
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.geometry import decompose_K_Rt_from_P
 from nr3d_lib.utils import load_rgb, glob_imgs, get_image_size
+from nr3d_lib.graphics.cameras import decompose_intr_c2w_from_proj_np
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
-class BMVSDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class BMVSDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
 
@@ -48,7 +48,7 @@ class BMVSDataset(DatasetIO):
         for scale_mat, world_mat in zip(scale_mats, world_mats):
             P = world_mat @ scale_mat
             P = P[:3, :4]
-            intrinsics, pose = decompose_K_Rt_from_P(P)
+            intrinsics, pose = decompose_intr_c2w_from_proj_np(P)
             cam_center_norms.append(np.linalg.norm(pose[:3,3]))
             intrs_all.append(intrinsics.astype(np.float32))
             c2ws_all.append(pose.astype(np.float32))
@@ -81,7 +81,7 @@ class BMVSDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -96,6 +96,9 @@ class BMVSDataset(DatasetIO):
             observers={cam['id']: cam}
         )
         return scenario
+
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
 
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.image_paths[frame_index]

@@ -25,8 +25,8 @@ from typing import Tuple
 from dataio.dtu.dtu_dataset import write_cams as write_cams_dtu
 
 from nr3d_lib.utils import get_image_size
-from nr3d_lib.geometry.math import inverse_transform_matrix_np
-from nr3d_lib.geometry.normalize_views import normalize_multi_view
+from nr3d_lib.maths import inverse_transform_matrix_np
+from nr3d_lib.graphics.cameras import normalize_multi_view
 
 
 def load_cam_original(filepath: str) -> Tuple[np.ndarray, np.ndarray]:

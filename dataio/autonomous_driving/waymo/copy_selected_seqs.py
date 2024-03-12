@@ -16,23 +16,18 @@ def copy_files(
     fields=['masks', 'normals', 'depths']):
     src_root = Path(root_dir).expanduser().resolve(strict=True)
     out_root = Path(out_root_dir).expanduser().resolve(strict=True)
-    for field in ['lidars', 'images', 'masks', 'normals', 'depths']:
-        if field in fields:
-            for seq_i, seq in enumerate(tqdm(select_scene_ids, f'copying {field}...')):
-                shutil.copytree(src_root.joinpath(field, seq), out_root.joinpath(field, seq))
-    if 'scenarios' in fields:
-        out_scenario_root = out_root.joinpath('scenarios')
-        os.makedirs(out_scenario_root, exist_ok=True)
-        for seq_i, seq in enumerate(tqdm(select_scene_ids, 'copying scenarios...')):
-            sce_fname = f"{seq}.pt"
-            sce_fpath = src_root.joinpath('scenarios', sce_fname)
-            shutil.copyfile(sce_fpath, out_scenario_root.joinpath(sce_fname))
+    for i, scene_id in enumerate(tqdm(select_scene_ids, f'copying...')):
+        for field in fields:
+            if field == 'scenarios':
+                shutil.copy(src_root.joinpath(scene_id, 'scenario.pt'), out_root.joinpath(scene_id, 'scenario.pt'))
+            else:
+                shutil.copytree(src_root.joinpath(scene_id, field), out_root.joinpath(scene_id, field))
 
 def copy_raw(
     out_root_dir: str, root_dir: str, select_scene_ids: List[str], 
 ):
-    for seq_i, seq in enumerate(tqdm(select_scene_ids, f'copying raw...')):
-        shutil.copyfile(os.path.join(root_dir, f"{seq}.tfrecord"), os.path.join(out_root_dir, f"{seq}.tfrecord"))
+    for i, scene_id in enumerate(tqdm(select_scene_ids, f'copying raw...')):
+        shutil.copyfile(os.path.join(root_dir, f"{scene_id}.tfrecord"), os.path.join(out_root_dir, f"{scene_id}.tfrecord"))
 
 if __name__ == "__main__":
     import argparse
@@ -50,5 +45,6 @@ if __name__ == "__main__":
     select_scene_ids = [s.split(',')[0].rstrip(".tfrecord") for s in seq_list]
     
     copy_files(args.out_root, args.data_root, select_scene_ids)
+    # copy_files(args.out_root, args.data_root, select_scene_ids, ['masks_vit_adapter'])
     # copy_raw(args.out_root, args.data_root, select_scene_ids)
     

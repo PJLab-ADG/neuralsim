@@ -106,7 +106,7 @@ Taking an example of a single machine with 4 GPUs:
 ```shell
 python -m torch.distributed.launch --nproc_per_node=4 \
 code_single/tools/train.py \
---config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml \
 --ddp
 ```
 
@@ -144,7 +144,7 @@ Taking an example of a 2 nodes with 4 GPUs each (i.e. 8 GPUs in total):
 python -m torch.distributed.launch --nnodes=$WORLD_SIZE --nproc_per_node=4 \
 --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --node_rank=$RANK \
 code_single/tools/train.py \
---config code_single/configs/waymo/streetsurf/withmask_withlidar.230814.yaml \
+--config code_single/configs/waymo/streetsurf/withmask_withlidar_joint.240219.yaml \
 --ddp 
 ```
 

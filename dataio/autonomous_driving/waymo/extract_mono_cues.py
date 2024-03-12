@@ -109,7 +109,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Visualize output for depth or surface normals')
 
     # Dataset specific configs
-    parser.add_argument('--data_root', type=str, default='/data1/waymo/processed1')
+    parser.add_argument('--data_root', type=str, default='/data1/waymo/processed')
     parser.add_argument('--seq_list', type=str, default=None, help='specify --seq_list if you want to limit the list of seqs')
     parser.add_argument('--verbose', action='store_true', help="Additionally generate .jpg files for visualization")
     parser.add_argument('--ignore_existing', action='store_true')

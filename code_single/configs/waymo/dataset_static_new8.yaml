@@ -1,0 +1,24 @@
+
+scenebank_cfg:
+  # NOTE: scene_id[,start_frame[,n_frames]]
+  scenarios:
+    - segment-5328596138024684667_2180_000_2200_000_with_camera_labels
+    - segment-8345535260120974350_1980_000_2000_000_with_camera_labels
+    - segment-8494653877777333091_540_000_560_000_with_camera_labels
+    - segment-10017090168044687777_6380_000_6400_000_with_camera_labels, 0, 180
+    - segment-10096619443888687526_2820_000_2840_000_with_camera_labels
+    - segment-13667377240304615855_500_000_520_000_with_camera_labels
+    - segment-14766384747691229841_6315_730_6335_730_with_camera_labels
+    - segment-17330200445788773877_2700_000_2720_000_with_camera_labels
+  observer_cfgs: 
+    Camera:
+      list: ${camera_list}
+    RaysLidar:
+      list: ${lidar_list}
+  object_cfgs:
+    Vehicle:
+      dynamic_only: true
+  no_objects: true # Set to true to skip loading foreground objects into scene graph
+  align_orientation: true
+  consider_distortion: true
+  scene_graph_has_ego_car: true

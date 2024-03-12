@@ -33,12 +33,12 @@ from app.resources import Scene, load_scene_bank, AssetBank
 
 
 @torch.no_grad()
-def sdf_slice(net, resolution: int, coordinate: List[str], dim=0, depth=0.0, device="cuda"):
+def sdf_slice(net, resolution: int, coordinate: List[str], dim=0, depth=0.0, device=torch.device('cuda')):
 
-    def normalized_slice(height, width, coordinate: List[str], dim=0, depth=0.0, device='cuda'):
+    def normalized_slice(height, width, coordinate: List[str], dim=0, depth=0.0, device=torch.device('cuda')):
         """Returns grid[x,y] -> coordinates for a normalized slice for some dim at some depth."""
 
-        def normalized_grid(height, width, device='cuda'):
+        def normalized_grid(height, width, device=torch.device('cuda')):
             """Returns grid[x,y] -> coordinates for a normalized window.
 
             Args:
@@ -115,7 +115,7 @@ def sdf_slice(net, resolution: int, coordinate: List[str], dim=0, depth=0.0, dev
     return vis
 
 @torch.no_grad()
-def sdf_slice_video(net, depths: List[float], resolution: int, coordinate: List[str], dim=0, device="cuda"):
+def sdf_slice_video(net, depths: List[float], resolution: int, coordinate: List[str], dim=0, device=torch.device('cuda')):
     slice_img_seq = []
     for depth in depths:
         slice_img = sdf_slice(net, resolution, coordinate, dim=dim, depth=depth, device=device)
@@ -126,7 +126,7 @@ def main_function(args: ConfigDict):
     # ---------------------------------------------
     # --------------     Load     -----------------
     # ---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     if (ckpt_file := args.get('load_pt', None)) is None:
         # Automatically load 'final_xxx.pt' or 'latest.pt'
         ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
@@ -144,9 +144,8 @@ def main_function(args: ConfigDict):
     # -----------     Asset Bank     --------------
     # ---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     # ---------------------------------------------
     # ---     Load assets to scene objects     ----
@@ -154,8 +153,8 @@ def main_function(args: ConfigDict):
     # for scene in scene_bank:
     scene = scene_bank[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
 
     fg_node = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
 

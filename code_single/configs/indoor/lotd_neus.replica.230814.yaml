@@ -114,7 +114,7 @@ assetbank_cfg:
             start_level: ${start_level} # (need to be small: so the training is stable; not too small, so there's still valid initialize pretraining.)
             stop_it: ${stop_it} # Not for too much iters; should end very soon to not hinder quality
           param_init_cfg:
-            method: uniform_to_type
+            type: uniform_to_type
             bound: 1.0e-4
           clip_level_grad_ema_factor: 0
         decoder_cfg: 
@@ -125,7 +125,7 @@ assetbank_cfg:
           activation:
             type: softplus
             beta: 100.0
-        n_rgb_used_output: 0
+        n_extra_feat_from_output: 0
         radius_init: ${radius_init}
         geo_init_method: pretrain_after_zero_out
         # geo_init_method: pretrain
@@ -154,10 +154,10 @@ assetbank_cfg:
           mode: from_net
           num_steps: 4
           num_pts: ${eval:"2**20"}
-        acquire_from_net_cfg:
+        update_from_net_cfg:
           num_steps: 4
           num_pts: ${eval:"2**20"}
-        acquire_from_samples_cfg: {}
+        update_from_samples_cfg: {}
         n_steps_between_update: 16
         n_steps_warmup: 256
       ray_query_cfg:
@@ -178,12 +178,21 @@ assetbank_cfg:
       initialize_cfg: 
         lr: 1.0e-3
         num_iters: 500
+      training_cfg:
+        lr: ${fglr}
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        invs_betas: [0.9, 0.999]
+        scheduler: ${training.scheduler}
   ImageEmbeddings:
     model_class: app.models.scene.ImageEmbeddings
     model_params:
       dims: ${image_embedding_dim}
       weight_init: uniform
       weight_init_std: 1.0e-4
+    training_cfg:
+      lr: ${emblr}
+      scheduler: ${training.scheduler}
 
 renderer:
   common:
@@ -209,11 +218,11 @@ training:
       camera:
         downscale: 1
         list: ${scenebank_cfg.observer_cfgs.Camera.list}
-      # rgb_mask: {}
-      # rgb_ignore_mask:
+      # image_occupancy_mask: {}
+      # image_ignore_mask:
       #   ignore_not_occupied: true
-      rgb_mono_depth: {}
-      rgb_mono_normals: {}
+      image_mono_depth: {}
+      image_mono_normals: {}
     pixel_dataset:
       #---------- Frame and pixel dataloader
       # joint: false
@@ -221,13 +230,10 @@ training:
       # num_rays: ${num_rays}
       # frame_sample_mode: uniform
       # pixel_sample_mode: error_map
-      # error_map_res: [32,32]
-      # uniform_sampling_fraction: 0.5
       #---------- Joint frame-pixel dataloader
       joint: true
+      equal_mode: ray_batch
       num_rays: ${num_rays}
-      error_map_res: [32,32]
-      uniform_sampling_fraction: 0.5
     image_patch_dataset:
       num_rays: ${eval:"64*64"}
       random_shift: true
@@ -242,17 +248,24 @@ training:
       camera:
         downscale: 1
         list: ${scenebank_cfg.observer_cfgs.Camera.list}
-      # rgb_mask: {}
-      # rgb_ignore_mask:
+      # image_occupancy_mask: {}
+      # image_ignore_mask:
       #   ignore_not_occupied: true
-      rgb_mono_depth: {}
-      rgb_mono_normals: {}
+      image_mono_depth: {}
+      image_mono_normals: {}
     image_dataset:
       camera_sample_mode: uniform
       frame_sample_mode: uniform
 
+  error_map:
+    error_map_hw: [32,64]
+    frac_uniform: 0.5
+    frac_mask_err: 0
+    n_steps_max: 2500 # NOTE: The actual effective time of this number now needs to be multiplied by the number of cameras! (Because each iteration samples a camera uniformly at random)
+
   #---------- Training losses
-  uniform_sample: ${eval:"2**12"} # 4 Ki
+  uniform_sample: 
+    Main: ${eval:"2**12"} # 4 Ki
   losses:
     rgb: 
       fn_type: ${rgb_fn_type}
@@ -275,7 +288,6 @@ training:
       apply_in_pixel_train_step: true
     occupancy_mask:
       w: ${w_mask}
-      w_on_errmap: 0
       pred_clip: 0
       safe_bce: true
       special_mask_mode: always_occupied # !!! indoor dataset
@@ -308,28 +320,18 @@ training:
         Main:
           norm_type: 2.0
           w: 1.0e-6
-
-  #---------- Optimization and shedulers
-  optim:
-    default:  1.0e-4
-    Main: 
-      lr: ${fglr}
-      eps: 1.0e-15
-      betas: [0.9, 0.99]
-      invs_betas: [0.9, 0.999]
-    ImageEmbeddings: ${emblr}
   # clip_grad_val: 
   #   Main:
   #     implicit_surface\.encoding: 0.001
   num_iters: ${num_iters}
   scheduler:
     #---------- exponential
-    type: exponential_step
+    type: exponential
     num_iters: ${training.num_iters}
     min_factor: ${min_factor}
     warmup_steps: ${warmup_steps}
     #---------- cosine
-    # type: warmupcosine
+    # type: warmup_cosine
     # num_iters: ${training.num_iters}
     # min_factor: ${min_factor}
     # warmup_steps: ${warmup_steps}

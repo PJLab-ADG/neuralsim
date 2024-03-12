@@ -1,5 +1,5 @@
 
-import numbers
+from numbers import Number
 import functools
 from typing import Dict, Union
 

@@ -18,21 +18,19 @@ from app.resources import Scene
 
 class MaskOccupancyLoss(nn.Module):
     def __init__(
-        self, w: float = 1.0, anneal: ConfigDict = None, 
+        self, w: float = 1.0, anneal: dict = None, 
         pred_clip: float = 1.0e-3, 
         safe_bce=True, bce_limit=0.1, 
-        w_on_errmap: float = 0, 
         special_mask_mode: Literal['always_occupied', 'only_cull_non_occupied', 'only_preserve_occupied'] = None
         ) -> None:
         """ Image occupancy (opacity) loss
 
         Args:
             w (float, optional): Loss weight. Defaults to 1.0.
-            anneal (ConfigDict, optional): Annealing config of loss weight. Defaults to None.
+            anneal (dict, optional): Annealing config of loss weight. Defaults to None.
             pred_clip (float, optional): Epsilon clip value to the predicted mask (for safer BCE). Defaults to 1.0e-3.
             safe_bce (bool, optional): Whether to use safe_bce implementation. Defaults to True.
             bce_limit (float, optional): safe_bce limit config. Defaults to 0.1.
-            w_on_errmap (float, optional): The weight of mask error accumated to error_map for pixel importance sampling. Defaults to 0.
             special_mask_mode (Literal['always_occupied', 'only_cull_non_occupied', 'only_preserve_occupied'], optional): 
                 Optional special mask loss types. 
                 'always_occupied': All pixels areas are occupied.
@@ -45,7 +43,6 @@ class MaskOccupancyLoss(nn.Module):
         
         self.w = w
         self.w_fn = None if anneal is None else get_annealer(**anneal)
-        self.w_on_errmap = w_on_errmap
         
         self.special_mask_mode = special_mask_mode
 
@@ -64,41 +61,35 @@ class MaskOccupancyLoss(nn.Module):
         
         mask_pred = ret['rendered']['mask_volume']
         if self.special_mask_mode is None:
-            mask_gt = ground_truth['rgb_mask'].to(dtype=torch.float, device=device).view(*mask_pred.shape) # 1 for occupied, 0 for non-occupied
+            mask_gt = ground_truth['image_occupancy_mask'].to(dtype=torch.float, device=device).view(*mask_pred.shape) # 1 for occupied, 0 for non-occupied
             loss = w * self.fn(mask_pred, mask_gt)
             with torch.no_grad():
                 # NOTE: Error map from different losses should be in the same scale. 
                 #       For now, we use [0,1] range for phtometric's error_map and mask's error_map
-                err = (self.w_on_errmap * F.l1_loss(mask_pred, mask_gt, reduction="none")) if self.w_on_errmap > 0 else 0
+                err = F.l1_loss(mask_pred, mask_gt, reduction="none")
         elif self.special_mask_mode == 'always_occupied':
             mask_gt = mask_pred.new_ones(mask_pred.shape)
             loss = w * self.fn(mask_pred, mask_gt)
             with torch.no_grad():
-                err = (self.w_on_errmap * F.l1_loss(mask_pred, mask_gt, reduction="none")) if self.w_on_errmap > 0 else 0
+                err = F.l1_loss(mask_pred, mask_gt, reduction="none")
         elif self.special_mask_mode == 'only_cull_non_occupied':
-            non_occ_gt = ground_truth['rgb_mask'].to(device=device).view(*mask_pred.shape) < 0.5
+            non_occ_gt = ground_truth['image_occupancy_mask'].to(device=device).view(*mask_pred.shape) < 0.5
             mask_pred_masked = mask_pred[non_occ_gt]
             mask_gt_masked = torch.zeros_like(mask_pred_masked)
             # NOTE: Use full image pixel count as denominator
             loss = w * self.fn(mask_pred_masked, mask_gt_masked, reduction='none').sum() / mask_pred.numel()
             with torch.no_grad():
-                if self.w_on_errmap > 0:
-                    err = torch.zeros_like(mask_pred)
-                    err[non_occ_gt] = F.l1_loss(mask_pred_masked, mask_gt_masked, reduction='none')
-                else:
-                    err = 0
+                err = torch.zeros_like(mask_pred)
+                err[non_occ_gt] = F.l1_loss(mask_pred_masked, mask_gt_masked, reduction='none')
         elif self.special_mask_mode == 'only_preserve_occupied':
-            occ_gt = ground_truth['rgb_mask'].to(device=device).view(*mask_pred.shape) > 0.5
+            occ_gt = ground_truth['image_occupancy_mask'].to(device=device).view(*mask_pred.shape) > 0.5
             mask_pred_masked = mask_pred[occ_gt]
             mask_gt_masked = torch.ones_like(mask_pred_masked)
             # NOTE: Use full image pixel count as denominator
             loss = w * self.fn(mask_pred_masked, mask_gt_masked, reduction='none').sum() / mask_pred.numel()
             with torch.no_grad():
-                if self.w_on_errmap > 0:
-                    err = torch.zeros_like(mask_pred)
-                    err[occ_gt] = F.l1_loss(mask_pred_masked, mask_gt_masked, reduction='none')
-                else:
-                    err = 0
+                err = torch.zeros_like(mask_pred)
+                err[occ_gt] = F.l1_loss(mask_pred_masked, mask_gt_masked, reduction='none')
         else:
             raise RuntimeError(f"Invalid special_mask_mode={self.special_mask_mode}")
         

@@ -4,8 +4,8 @@
 @brief  Geometry sparsity regularization loss
 """
 
-import numbers
 from copy import deepcopy
+from numbers import Number
 from typing import Dict, List, Literal, Union
 
 import torch
@@ -13,7 +13,7 @@ import torch.nn as nn
 
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.annealers import get_anneal_val
-from nr3d_lib.models.utils import normalized_logistic_density
+from nr3d_lib.maths import normalized_logistic_density
 
 from app.resources import Scene, SceneNode
 
@@ -53,39 +53,14 @@ class SparsityLoss(nn.Module):
     def fn_density_reg(self, x: torch.Tensor, lamb: float = 0.05):
         return (1 - (-lamb * x).exp()).abs().mean()
     
-    def forward_code_single(self, obj: SceneNode, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
-        ret_losses = {}
-        if it < self.enable_after:
-            return ret_losses
-        
-        class_name = ret['class_name']
-        config = deepcopy(self.class_name_cfgs[class_name])
-        w = config.pop('w', None)
-        if (anneal_cfg:=config.pop('anneal', None)) is not None:
-            w = get_anneal_val(it=it, **anneal_cfg)
-        assert w is not None, f"Can not get w for {self.__class__.__name__}.{class_name}"
-        
-        fn_type = config.pop('type', 'normalized_logistic_density')
-        val = uniform_samples[config.pop('key', 'sdf')]
-        if fn_type == 'normal':
-            loss = self.fn_normal(val, **config)
-        elif fn_type == 'normalized_logistic_density':
-            loss = self.fn_nld(val, **config)
-        elif fn_type == 'density_reg':
-            loss = self.fn_density_reg(val, **config)
-        else:
-            raise RuntimeError(f"Invalid type={fn_type}")
-        ret_losses['loss_sparsity'] = w * loss
-        return ret_losses
-        
-    def forward_code_multi(self, scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
+    def forward(self, scene: Scene, ret: dict, uniform_samples: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
         if it < self.enable_after:
             return {}
         
         ret_losses = {}
         for _, obj_raw_ret in ret['raw_per_obj_model'].items():
-            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
-                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            if obj_raw_ret['volume_buffer']['type'] == 'empty':
+                continue # Skip not rendered models
             class_name = obj_raw_ret['class_name']
             model_id = obj_raw_ret['model_id']
             model = scene.asset_bank[model_id]

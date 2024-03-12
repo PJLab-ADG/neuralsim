@@ -13,9 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from nr3d_lib.logger import Logger
-from nr3d_lib.config import ConfigDict
 from nr3d_lib.models.annealers import get_annealer, get_anneal_val
-from nr3d_lib.render.pack_ops import packed_sum, packed_geq, packed_leq, packed_lt
+from nr3d_lib.graphics.pack_ops import packed_sum, packed_geq, packed_leq, packed_lt
 from nr3d_lib.models.loss.recon import huber_loss, l2_loss, relative_l2_loss, l1_loss
 
 from app.resources import Scene
@@ -23,7 +22,7 @@ from app.resources import Scene
 class DepthLoss(nn.Module):
     def __init__(
         self, 
-        w: float = 1.0, anneal: ConfigDict = None, 
+        w: float = 1.0, anneal: dict = None, 
         fn_type: Literal['l2', 'l2_relative', 'l2_normalized', 'l1_log', 'l1', 'huber'] = 'l1_log', 
         fn_param: dict = {}, 
         ) -> None:
@@ -57,8 +56,8 @@ class LineOfSightLoss(nn.Module):
     # LoS (Line of Sight) losses from Urban Radiance Fields (Rematas et al., 2022).
     def __init__(
         self, 
-        w: float = 1.0, anneal: ConfigDict = None, 
-        fn_type: str = 'nerf', fn_param = ConfigDict(), 
+        w: float = 1.0, anneal: dict = None, 
+        fn_type: str = 'nerf', fn_param = dict(), 
         ) -> None:
         super().__init__()
         self.w = w
@@ -87,16 +86,16 @@ class LineOfSightLoss(nn.Module):
         ):
         
         volume_buffer = ret['volume_buffer']
-        if (buffer_type:=volume_buffer['buffer_type']) == 'empty':
+        if (buffer_type:=volume_buffer['type']) == 'empty':
             return {}
         
         w = self.w if self.w_fn is None else self.w_fn(it=it)
         target_distribution = torch.distributions.normal.Normal(0.0, sigma / sigma_scale_factor)
-        ray_inds_hit, depth_samples, vw = itemgetter('ray_inds_hit', 't', 'vw')(volume_buffer)
+        rays_inds_hit, depth_samples, vw = itemgetter('rays_inds_hit', 't', 'vw')(volume_buffer)
         
-        mask_on_hit = mask[ray_inds_hit]
+        mask_on_hit = mask[rays_inds_hit]
         depth_pred = ret['rendered']['depth_volume']
-        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[ray_inds_hit]
+        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[rays_inds_hit]
 
         if buffer_type == 'packed':
             pack_infos = volume_buffer['pack_infos_hit']
@@ -133,16 +132,16 @@ class LineOfSightLoss(nn.Module):
         sigma_scale_factor: float = 3.0, 
         ):
         volume_buffer = ret['volume_buffer']
-        if (buffer_type:=volume_buffer['buffer_type']) == 'empty':
+        if (buffer_type:=volume_buffer['type']) == 'empty':
             return {}
         
         w = self.w if self.w_fn is None else self.w_fn(it=it)
         target_distribution = torch.distributions.normal.Normal(0.0, sigma / sigma_scale_factor)
-        ray_inds_hit, depth_samples, vw = itemgetter('ray_inds_hit', 't', 'vw')(volume_buffer)
+        rays_inds_hit, depth_samples, vw = itemgetter('rays_inds_hit', 't', 'vw')(volume_buffer)
         
-        mask_on_hit = mask[ray_inds_hit]
+        mask_on_hit = mask[rays_inds_hit]
         depth_pred = ret['rendered']['depth_volume']
-        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[ray_inds_hit]
+        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[rays_inds_hit]
 
         if buffer_type == 'packed':
             pack_infos = volume_buffer['pack_infos_hit']
@@ -181,17 +180,17 @@ class LineOfSightLoss(nn.Module):
         ):
         # Inspired by unisim https://waabi.ai/wp-content/uploads/2023/05/UniSim-paper.pdf
         volume_buffer = ret['volume_buffer']
-        if (buffer_type:=volume_buffer['buffer_type']) == 'empty':
+        if (buffer_type:=volume_buffer['type']) == 'empty':
             return {}
 
         epsilon = epsilon if epsilon_anneal is None else get_anneal_val(**epsilon_anneal, it=it)
 
         w = self.w if self.w_fn is None else self.w_fn(it=it)
-        ray_inds_hit, depth_samples, vw = itemgetter('ray_inds_hit', 't', 'vw')(volume_buffer)
+        rays_inds_hit, depth_samples, vw = itemgetter('rays_inds_hit', 't', 'vw')(volume_buffer)
         
-        mask_on_hit = mask[ray_inds_hit]
+        mask_on_hit = mask[rays_inds_hit]
         depth_pred = ret['rendered']['depth_volume']
-        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[ray_inds_hit]
+        depth_gt_hit = ground_truth['ranges'].to(depth_pred).view(depth_pred.shape)[rays_inds_hit]
         
         if buffer_type == 'packed':
             pack_infos = volume_buffer['pack_infos_hit']
@@ -213,8 +212,8 @@ class LineOfSightLoss(nn.Module):
 class LidarLoss(nn.Module):
     def __init__(
         self, 
-        depth: ConfigDict = None,
-        line_of_sight: ConfigDict = None,  
+        depth: dict = None,
+        line_of_sight: dict = None,  
         discard_toofar: float = None, 
         discard_outliers: float = 0,
         discard_outliers_median: float = 100.0, 
@@ -223,8 +222,8 @@ class LidarLoss(nn.Module):
         """ LiDAR supervision treating LiDARs as sparse depth sensors. 
 
         Args:
-            depth (ConfigDict, optional): The configuration for depth supervision. Defaults to None.
-            line_of_sight (ConfigDict, optional): The configuration for line of sight regularization. Defaults to None.
+            depth (dict, optional): The configuration for depth supervision. Defaults to None.
+            line_of_sight (dict, optional): The configuration for line of sight regularization. Defaults to None.
             discard_toofar (float, optional): Lidar beams with GT depth exceeding this value will be discarded. Defaults to None.
             discard_outliers (float, optional): A value ranging from 0 to 1, representing a ratio. 
                 Optionally discard a fixed proportion of lidar beams with large L1 errors. Defaults to 0.
@@ -272,8 +271,8 @@ class LidarLoss(nn.Module):
                 depth_err_l1 = l1_loss(depth_pred, depth_gt, mask, reduction='none')
                 _, sort_inds = torch.sort(depth_err_l1.data) # depth_err[sort_inds]: From small to large
                                 
-                dicard_ray_inds = sort_inds[-int(depth_pred.numel() * self.discard_outliers):]
-                mask[dicard_ray_inds] = False
+                dicard_rays_inds = sort_inds[-int(depth_pred.numel() * self.discard_outliers):]
+                mask[dicard_rays_inds] = False
 
         if self.discard_outliers_median > 0:
             # Optionally discard beams that have errors exceeding `self.discard_outliers_median` times the median error.

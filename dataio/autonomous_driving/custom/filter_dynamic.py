@@ -48,7 +48,7 @@ def stat_dynamic_objects(scenario: dict, loc_eps=0.03, speed_eps=None, all_class
     # Filter according to speed_x and speed_y
     pass
     #------------------------------------------------
-    # Gather results from box_speed and loc_motion
+    # Collect results from box_speed and loc_motion
     for cls_name, cls_dict in stats.items():
         # li_dyna = list(set(cls_dict['by_speed']) | set(cls_dict['by_loc']))
         li_dyna = cls_dict['by_loc']

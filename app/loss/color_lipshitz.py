@@ -7,8 +7,8 @@
             Radu Alexandru Rosu and Sven Behnke
 """
 
-import numbers
 from copy import deepcopy
+from numbers import Number
 from typing import Dict, List, Union
 
 import torch
@@ -30,32 +30,21 @@ class ColorLipshitzRegLoss(nn.Module):
         super().__init__()
         
         self.enable_after = enable_after
-        if isinstance(class_name_cfgs, numbers.Number):
+        if isinstance(class_name_cfgs, Number):
             class_name_cfgs = {class_name: {'w': class_name_cfgs} for class_name in drawable_class_names}
         else:
             for k, v in class_name_cfgs.items():
-                if isinstance(v, numbers.Number):
+                if isinstance(v, Number):
                     class_name_cfgs[k] = {'w' : v}
         self.class_name_cfgs: Dict[str, ConfigDict] = class_name_cfgs
     
-    def forward_code_single(self, obj: SceneNode, ret: dict, sample: dict, ground_truth: dict, it: int):
-        if it < self.enable_after:
-            return {}
-        model = obj.model
-        class_name = obj.class_name
-        config = deepcopy(self.class_name_cfgs[class_name])
-        
-        assert hasattr(model, 'get_color_lipshitz_bound'), f"{obj.model.id} has no get_color_lipshitz_bound"
-        loss = config.w * model.get_color_lipshitz_bound()
-        return {'loss_color_reg': loss}
-    
-    def forward_code_multi(self, scene: Scene, ret: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
+    def forward(self, scene: Scene, ret: dict, sample: dict, ground_truth: dict, it: int) -> Dict[str, torch.Tensor]:
         if it < self.enable_after:
             return {}
         ret_losses = {}
         for _, obj_raw_ret in ret['raw_per_obj_model'].items():
-            if obj_raw_ret['volume_buffer']['buffer_type'] == 'empty':
-                continue # Skip not rendered models to prevent pytorch error (accessing freed tensors)
+            if obj_raw_ret['volume_buffer']['type'] == 'empty':
+                continue # Skip not rendered models
             class_name = obj_raw_ret['class_name']
             model_id = obj_raw_ret['model_id']
             model = scene.asset_bank[model_id]

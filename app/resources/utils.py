@@ -8,7 +8,7 @@ __all__ = ['load_scenes_and_assets']
 
 import os
 import torch
-from typing import Tuple
+from typing import Tuple, Dict, Any
 
 from nr3d_lib.fmt import log
 from nr3d_lib.checkpoint import sorted_ckpts
@@ -21,7 +21,7 @@ from app.resources.scene_bank import load_scene_bank
 
 
 def load_scenes_and_assets(exp_dir: str, assetbank_cfg: ConfigDict, training: ConfigDict, *,
-                           load_pt: str = None, device=torch.device("cuda:0"), **kwargs) -> Tuple[IDListedDict[Scene], AssetBank]:
+                           load_pt: str = None, device=None, **kwargs) -> Tuple[IDListedDict[Scene], AssetBank, Dict[str, Any]]:
     # ---------------------------------------------
     # -----------  Load Checkpoint   --------------
     # ---------------------------------------------
@@ -39,8 +39,8 @@ def load_scenes_and_assets(exp_dir: str, assetbank_cfg: ConfigDict, training: Co
     # -----------     Asset Bank     --------------
     # ---------------------------------------------
     asset_bank = AssetBank(assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank, load=state_dict['asset_bank'], device=device)
-    asset_bank.preprocess_per_train_step(training.num_iters)
+    asset_bank.create_asset_bank(scene_bank, load_state_dict=state_dict['asset_bank'], device=device)
+    asset_bank.training_before_per_step(training.num_iters)
     asset_bank.eval()
 
     # ---------------------------------------------

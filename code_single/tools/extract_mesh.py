@@ -20,19 +20,19 @@ import torch
 
 from nr3d_lib.fmt import log
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.geometry import extract_mesh
 from nr3d_lib.checkpoint import sorted_ckpts
 from nr3d_lib.utils import IDListedDict, cond_mkdir, import_str
 from nr3d_lib.models.spatial import ForestBlockSpace
+from nr3d_lib.graphics.trianglemesh import extract_mesh
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 from app.resources import Scene, load_scene_bank, AssetBank
 
 def main_function(args: ConfigDict):
     #---------------------------------------------
     #--------------     Load     -----------------
     #---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     if (ckpt_file:=args.get('load_pt', None)) is None:
         # Automatically load 'final_xxx.pt' or 'latest.pt'
         ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
@@ -50,9 +50,8 @@ def main_function(args: ConfigDict):
     #-----------     Asset Bank     --------------
     #---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     #---------------------------------------------
     #---     Load assets to scene objects     ----
@@ -60,10 +59,10 @@ def main_function(args: ConfigDict):
     # for scene in scene_bank:
     scene = scene_bank[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
 
-    dataset_impl: DatasetIO = import_str(args.dataset_cfg.target)(args.dataset_cfg.param)
+    dataset_impl: SceneDataset = import_str(args.dataset_cfg.target)(args.dataset_cfg.param)
     scale_mat = dataset_impl.scale_mat if hasattr(dataset_impl, "scale_mat") else None
 
     #---------------------------------------------
@@ -78,7 +77,7 @@ def main_function(args: ConfigDict):
         else:
             log.info(f"Start [extract_mesh], N={args.N}, levelset={args.levelset}, in {args.exp_dir}")
         for scene in scene_bank:
-            scene.frozen_at(args.frozen_at)
+            scene.slice_at(args.slice_at)
             obj = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
             
             if args.to_world:
@@ -100,23 +99,23 @@ def main_function(args: ConfigDict):
             if scene.image_embeddings is not None:
                 # Use the 0-th image embedding
                 cam0_id = list(scene.observer_groups_by_class_name['Camera'].keys())[0]
-                h_appear_embed = scene.image_embeddings[cam0_id](torch.tensor([0], device=device))
+                h_appear = scene.image_embeddings[cam0_id](torch.tensor([0], device=device))
             else:
-                h_appear_embed = None
+                h_appear = None
             
             if args.surface_type == 'sdf':
                 levelset = args.levelset
                 query_surf_fn = lambda x: model.forward_sdf(x, input_normalized=False)['sdf']
                 query_color_fn = lambda x, v: model.forward(
                     x, v, with_rgb=True, with_normal=False, input_normalized=False, 
-                    h_appear_embed=h_appear_embed.expand(x.shape[0], -1) if h_appear_embed is not None else None)['radiances']
+                    h_appear=h_appear.expand(x.shape[0], -1) if h_appear is not None else None)['rgb']
             elif args.surface_type == 'nerf':
                 # NOTE: *(-1) since larger density value means inside.
                 levelset = -1 * args.levelset
-                query_surf_fn = lambda x: -1 * model.forward_sigma(x, input_normalized=False)['sigma']
+                query_surf_fn = lambda x: -1 * model.forward_density(x, input_normalized=False)['sigma']
                 query_color_fn = lambda x, v: model.forward(
                     x, v, input_normalized=False, 
-                    h_appear_embed=h_appear_embed.expand(x.shape[0], -1) if h_appear_embed is not None else None)['radiances']
+                    h_appear=h_appear.expand(x.shape[0], -1) if h_appear is not None else None)['rgb']
 
             else:
                 raise RuntimeError(f"Invalid surface_type={args.surface_type}")
@@ -142,7 +141,7 @@ def make_parser():
     bc.parser.add_argument('--surface_type', type=str, default='sdf', help="Options: [sdf, nerf]. Use `sdf` by default.")
     bc.parser.add_argument("--include_color", action='store_true', help="If set, the appearance color will be attached to the mesh.")
     bc.parser.add_argument("--to_world", action='store_true', help="If set, the mesh will be transformed to world coordinates.")
-    bc.parser.add_argument("--frozen_at", type=int, default=0, help="Specifies the frame at which the scene is frozen before extracting the mesh.")
+    bc.parser.add_argument("--slice_at", type=int, default=0, help="Specifies the frame at which the scene is frozen before extracting the mesh.")
     bc.parser.add_argument("--levelset", type=float, default=0.0, help="Defines the level set to extract the surface.")
     
     bc.parser.add_argument("--load_pt", type=str, default=None, help="Typically unnecessary as the final or latest ckpt is loaded automatically. \n"\

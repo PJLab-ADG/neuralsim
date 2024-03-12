@@ -14,14 +14,15 @@ import os
 import pickle
 import functools
 import numpy as np
+from numbers import Number
 from typing import Callable, Literal, Union, List, Dict, NamedTuple, Tuple, Type
 
 import torch
 import torch.nn as nn
 
 from nr3d_lib.models.attributes import *
-from nr3d_lib.utils import IDListedDict, import_str
-from nr3d_lib.models.spatial_accel.occgrid_accel import OccupancyGridAS
+from nr3d_lib.utils import IDListedDict, get_shape, import_str, check_to_torch
+from nr3d_lib.models.accelerations.occgrid_accel import OccGridAccel
 
 from app.resources import SceneNode
 from app.resources.observers import OBSERVER_CLASS_NAMES, OBSERVER_TYPE, Camera, Lidar, RaysLidar
@@ -39,7 +40,7 @@ class namedtuple_observer_infos(NamedTuple):
     all_frustum_pts: torch.Tensor
 
 class Scene(object):
-    def __init__(self, unique_id: str='WORLD', device=torch.device('cuda'), dtype=torch.float) -> None:
+    def __init__(self, unique_id: str='WORLD', device=None, dtype=torch.float) -> None:
         self.device = device
         self.dtype = dtype
         
@@ -49,30 +50,82 @@ class Scene(object):
         self._init_graph()
         
         #-------- For scene with loaded sequence/log data
-        # The frame ind(s) frozen at 
+        """
+        NOTE: Switching between timestamp interpolation mode or frame index slicing mode.
+        When `use_ts_interp` is True: \
+            using continuous timestamp to interpolate nodes' data. 
+            
+            Can NOT call slice_at(). \
+            i.e. Can not use frame index since different nodes could have in-consistent keyframes.
+            
+            Each node can have different frame definition and frame length. \
+            This allows nodes having denser or sparser data compared to others. \
+            In this case, can use `global_fi` and `global_ts` to mark the corresponding \
+                global frame indices and timestamps of each *valid* frame of the node's local data.\
+            For example, for a scene with 200 frame length, the `ego_car` node can have frame length = 400, \
+                which means the data of `ego_car` is 2x denser compared to other nodes' data. \
+                The `global_fi` of `ego_car` could be `0,0,1,1,2,2,...`, \
+                which means for each global frame, there are two frames of local data for `ego_car`.
+            
+        When `use_ts_interp` is False: \
+            using consecutive frame index to slice nodes' data. 
+            
+            Can call interp_at(). \
+            i.e. Can use timestamps to interplate nodes' data if each `node.frame_global_ts` is provided.
+        
+        For both cases, the validness of the node's local data is stored in `node.subattr.frame_valid_flags` \
+            Note:
+                `node.i_valid_flags` is the sliced/interpolated result. \
+                `node.frame_valid_flags` has the overall value, un-affected by slice_at()/interp_at().
+            This value is determined by the segment data's 'start_frame' and 'n_frames' when loading.\
+                Find the variable `all_seg_local_fi` in `nodes.py` for more details.
+        """
+        self.use_ts_interp: bool = False
+        
+        # The frame ind(s) sliced at / the timestamp interpolated at
         self.i = None
+        # Whether the `self.i` represents timestamps. If False, `i` represents the frame indices.
+        self.i_is_timestamp = None
+        # self.i_is_single = None # See below
         # Total data frames of this scene (if this scene has a `dataset`)
         self.n_frames: int = 0 
+        
         # The offset between scene's frames and dataset's frames (if this scene has a `dataset`)
         self.data_frame_offset: int = 0
-        
+        # The offset between scene's timestamps and dataset's timestamps \
+        #   (only if this scene has a `dataset` and `dataset` has timestamp definitions)
+        self.data_timestamp_offset: float = 0
+        # Convert between raw timestamps and [-1,1] timestamps
+        self.data_ts_offset: float = 0.0
+        self.data_ts_scale: float = 1.0
+
+        # (Optional) Universal timestamp of each frame for this scene.
+        #   Timestamps across different nodes of one single scene is universally defined. \
+        #       (Might have data at different time, but only one unique sacred timeline)
+        self.frame_global_ts: torch.Tensor = None
+        # # Not needed. Always equals to torch.arange(self.n_frames)
+        # self.frame_global_fi: torch.LongTensor = None 
+
         #-------- Scene meta data
         self.metas: dict = {}
         
         #-------- Optional scene-level misc models
         # app/models_misc/learnable_params.py; Scene parameter (pose, intr, extr) refinement 
-        self.learnable_params = None
+        self.learnable_params: nn.Module = None
         # app/models_misc/image_embeddings.py; Per-frame image embeddings, as in NeRF in the wild
-        self.image_embeddings = None
+        self.image_embeddings: nn.Module = None
         
         #-------- For code_single, the single object that we focus on. 
         # Load from scenario; different tasks could have different settings.
         #     e.g. "Street" for street views, "Main" for other
         self.main_class_name = 'Main'
+        
+        #-------- The overall asset_bank that contains models of this scene
+        self.asset_bank = None
 
     def _init_graph(self):
         #-------- Scene-Graph basic structures
-        self.root = SceneNode(self.id, scene=self)
+        self.root = SceneNode(self.id, scene=self, device=self.device)
         # self.root.transform = None
         # self.root.world_transform = None
 
@@ -88,8 +141,30 @@ class Scene(object):
 
     #------------------------------------------------------------------
     #----------------------  Loading, updating, reading
+
+    @property
+    def slice_prefix(self):
+        # The tensor shape of currently sliced frame indice(s) / interpolated timestamp(s)
+        return get_shape(self.i)
+
+    @property
+    def i_is_single(self):
+        # Whether frozen at single frame index / timestamp
+        return len(self.slice_prefix) == 0
+
+    def __len__(self):
+        return self.n_frames
+    
+    def _make_default_timestamps(self, n_frames: int = None, device=None):
+        n_frames = n_frames or self.n_frames
+        ts = torch.linspace(-1, 1, n_frames, dtype=torch.float, device=self.device)
+        return ts
+
+    """
+    slice_at functions
+    """
     # @profile
-    def frozen_at(self, i: Union[int, torch.LongTensor]):
+    def slice_at(self, i: Union[int, torch.LongTensor]):
         """ Frozen at a single time frame or multiple time frames, and update the scene graph.
         This will first retrieve data at the given frame for each nodes' attributes, 
         and then update the scene graph from the root to leaves, 
@@ -98,21 +173,86 @@ class Scene(object):
         Args:
             i (Union[int, torch.LongTensor]): The frame indice(s) to freeze the scene at
         """
+        if self.use_ts_interp:
+            raise RuntimeError(f"You should not call `slice_at()`. Use timestamp interpolation `interp_at()` instead.")
+        
         self.i = i
-        # self.root.frozen_at(i)
+        self.i_is_timestamp = False
+        # self.root.slice_at(i)
+        
+        # NOTE: Frozen each node's attr, without updating the scene graph.
         for n in self.all_nodes:
-            n._frozen_at(i)
+            n._slice_at(i)
         
         # NOTE: Update the scene graph, from root to leaf.
         #       The `world_transform` of each node will also be calculated from root to leaf.
         self.root.update()
     
-    def frozen_at_full(self):
+    def slice_at_full(self):
         """
         Frozen at full indices, from start to end
         """
-        self.frozen_at(torch.arange(len(self), device=self.device, dtype=torch.long))
-    
+        self.slice_at(torch.arange(len(self), device=self.device, dtype=torch.long))
+
+    """
+    interp_at functions
+    """
+    def interp_at(self, ts: Union[Number, torch.FloatTensor]):
+        """
+        Similar to `_slice_at`, but performs interpolation at given novel timestamps `ts` \
+            among valid keyframe timestamps (`self.frame_global_ts`). 
+
+        Args:
+            ts (Union[Number, torch.FloatTensor]): Timestamps at which to perform interpolation.
+        """
+        ts = check_to_torch(ts, dtype=torch.float, device=self.device)
+        self.i = ts # TODO: Check BUGs
+        self.i_is_timestamp = True
+        
+        # NOTE: Interpolate each node's attr, without updating the scene graph.
+        #       Different nodes might have different `global_ts`, and might be different from `scene.frame_global_ts`
+        for n in self.all_nodes:
+            n._interp_at(ts)
+        
+        # NOTE: Update the scene graph, from root to leaf.
+        #       The `world_transform` of each node will also be calculated from root to leaf.
+        self.root.update()
+
+    def interp_at_full(self, node_id: str = None):
+        if node_id is not None:
+            all_ts = self.all_nodes[node_id].frame_global_ts
+        else:
+            all_ts = self.frame_global_ts
+        self.interp_at(all_ts)
+
+    """
+    frozen_at_xxx_frame functions: Support auto decide between interp_at and slice_at.
+    - if self.use_ts_interp: freeze the scene using timestamp interpolating.
+    - if not self.use_ts_interp: freeze the scene using frame indices slicing.
+    """
+    def frozen_at_node_frame(self, node_id: str, i: Union[int, torch.LongTensor]):
+        if self.use_ts_interp:
+            ts = self.all_nodes[node_id].frame_global_ts[i]
+            self.interp_at(ts)
+        else:
+            self.slice_at(i)
+    def frozen_at_full_node_frame(self, node_id: str):
+        if self.use_ts_interp:
+            self.interp_at_full(node_id)
+        else:
+            self.slice_at_full()
+    def frozen_at_global_frame(self, i: Union[int, torch.LongTensor]):
+        if self.use_ts_interp:
+            ts = self.frame_global_ts[i]
+            self.interp_at(ts)
+        else:
+            self.slice_at(i)
+    def frozen_at_full_global_frame(self):
+        if self.use_ts_interp:
+            self.interp_at_full()
+        else:
+            self.slice_at_full()
+
     def unfrozen(self):
         """
         Un-freeze a scene; i.e. resets all its nodes to default in-active state
@@ -139,6 +279,45 @@ class Scene(object):
         del self.all_nodes, self.all_nodes_by_class_name
         self._init_graph()
 
+    def _replicate_for_parallel(self, device) -> 'Scene':
+        """
+        Make one shallow copy of the current scene and its nodes
+        """
+        replica = self.__new__(type(self))
+        replica.__dict__ = self.__dict__.copy()
+        
+        replica.device = device
+        if self.frame_global_ts is not None:
+            replica.frame_global_ts = self.frame_global_ts.clone().to(device)
+        if self.i is not None and isinstance(self.i, torch.Tensor):
+            replica.i = self.i.clone().to(device)
+
+        #---- Replicate all the node objects
+        #     NOTE: Similar to pytorch, their Attr object in the new replicated nodes' frame_data are still handles from the old object, 
+        #           Which will only be replaced in replicate_scene() after the nodes' Attr data got "broadcast_coalesced_reshape"-ed
+        replica.all_nodes = IDListedDict([o._replicate_for_parallel(device) for o in replica.all_nodes])
+        
+        #---- Replicate the scene graph by replacing old nodes' handles with the new replicated nodes' handles from root to leaves
+        def recursive_update_node_handle(o: SceneNode):
+            if len(o.children) > 0:
+                o.children = replica.all_nodes[list(o.children.keys())]
+            for child in o.children:
+                child.parent = o
+                recursive_update_node_handle(child)
+        replica.root = replica.all_nodes[replica.root.id]
+        recursive_update_node_handle(replica.root)
+        
+        #---- Replicate all the other node handle storage dicts
+        if len(replica.drawables.keys()) > 0:
+            replica.drawables = replica.all_nodes[list(replica.drawables.keys())]
+        if len(replica.observers.keys()) > 0:
+            replica.observers = replica.all_nodes[list(replica.observers.keys())]
+        replica.drawable_groups_by_class_name = {k: replica.all_nodes[list(v.keys())] for k, v in replica.drawable_groups_by_class_name.items()}
+        replica.drawable_groups_by_model_id = {k: replica.all_nodes[list(v.keys())] for k, v in replica.drawable_groups_by_model_id.items()}
+        replica.observer_groups_by_class_name = {k: replica.all_nodes[list(v.keys())] for k, v in replica.observer_groups_by_class_name.items()}
+        replica.all_nodes_by_class_name = {k: replica.all_nodes[list(v.keys())] for k, v in replica.all_nodes_by_class_name.items()}
+        return replica
+
     def load_from_scenario(self, scenario: dict, device=None):
         """
         Load one scene from the given scenario description dict.
@@ -152,12 +331,26 @@ class Scene(object):
             device (torch.device, optional): The target torch.device to store this scene's nodes' attributes. 
                 Defaults to None.
         """
+        device = device or self.device
+        
         #---- Load scene meta
         # NOTE: Scene's id is changed when loading a scenario
         self.id: str = scenario['scene_id']
-        self.data_frame_offset: int = scenario['metas'].get('data_frame_offset', 0)
         self.n_frames: int = scenario['metas']['n_frames']
+        self.data_frame_offset: int = scenario['metas'].get('data_frame_offset', 0)
+        self.data_ts_offset: float = scenario['metas'].get('data_timestamp_offset', 0.0)
+        self.data_ts_scale: float = scenario['metas'].get('data_timestamp_scale', 1.0)
+        self.use_ts_interp: bool = scenario['metas'].get('use_ts_interp', False)
+        if 'frame_timestamps' in scenario['metas']:
+            global_ts = scenario['metas']['frame_timestamps']
+            global_ts = check_to_torch(global_ts, dtype=torch.float, device=device)
+        else:
+            global_ts = self._make_default_timestamps(self.n_frames, device=device)
+        self.frame_global_ts = global_ts
         self.metas: dict = scenario['metas']
+        # NOTE: Pass the `default_global_ts` to the root node, \
+        #       Then for all remaning descendants, use `parent.frame_global_ts` instead.
+        self.root.fill_default_data(self.n_frames, default_global_ts=self.frame_global_ts, device=device)
         
         # NOTE: For code_single, the single object that we focus on. 
         # e.g. "Street" for street views, "Obj" for single-object reconstruction, "Room" for in-door tasks
@@ -169,29 +362,9 @@ class Scene(object):
             Recursively load
             """
             o = SceneNode(oid, class_name=odict['class_name'], scene=self, device=device)
-            # Load object attr segments
-            if 'segments' in odict:
-                o.set_n_total_frames(self.n_frames)
-                for seg in odict['segments']:
-                    data = seg['data']
-                    d = {}
-                    # TODO: Determine the type of each attribute during dataset preprocessing.
-                    if 'transform' in data: d.update(transform=TransformMat4x4(data['transform'], dtype=torch.float, device=device))
-                    if 'scale' in data: d.update(scale=Scale(data['scale'], dtype=torch.float, device=device))
-                    if 'timestamp' in data: d.update(timestamp=Scalar(data['timestamp'], device=device))
-                    if 'global_frame_ind' in data: d.update(global_frame_ind=Scalar(data['global_frame_ind'], device=device))
-                    o.load_attr_segment(n_frames=seg['n_frames'], start_frame=seg.get('start_frame', 0), **d)
-                o.finish_attr_segments()
-            elif 'data' in odict:
-                o.set_n_total_frames(self.n_frames)
-                d = {}
-                data = odict['data']
-                if 'transform' in data: d.update(transform=TransformMat4x4(data['transform'], dtype=torch.float, device=device))
-                if 'scale' in data: d.update(scale=Scale(data['scale'], dtype=torch.float, device=device))
-                if 'timestamp' in data: d.update(timestamp=Scalar(data['timestamp'], device=device))
-                if 'global_frame_ind' in data: d.update(global_frame_ind=Scalar(data['global_frame_ind'], device=device))
-                o.load_attr_segment(n_frames=odict['n_frames'], start_frame=odict.get('start_frame', 0), **d)
-                o.finish_attr_segments()
+            # Load object attr data
+            o.load_from_odict(self.n_frames, odict, default_global_ts=parent.frame_global_ts, device=device)
+            # Add node to scene_graph
             self.add_node(o, parent=parent)
             # Recursively load node's childrens
             if 'children' in odict:
@@ -203,7 +376,7 @@ class Scene(object):
         #---- Process observers
         def load_observers(oid: str, odict: dict, parent:SceneNode=self.root):
             """
-            # Recursively load
+            Recursively load
             """
             if odict['class_name'] == 'Camera':
                 o = Camera(oid, scene=self, device=device)
@@ -213,36 +386,9 @@ class Scene(object):
                 o = RaysLidar(oid, scene=self, device=device)
             else:
                 o = SceneNode(oid, class_name=odict['class_name'], scene=self, device=device)
-            if 'data' in odict:
-                o.set_n_total_frames(self.n_frames)
-                data = odict['data']
-                d = {}
-                if 'intr' in data:
-                    hw = data['hw'].astype(np.float32)
-                    intr_dict = dict(H=hw[:,0], W=hw[:,1], device=device)
-                    camera_model: str = odict.get('camera_model', 'pinhole')
-                    if camera_model.lower() == 'pinhole':
-                        intr_dict['mat'] = CameraMatrix3x3(data['intr'][..., :3, :3], dtype=torch.float, device=device)
-                        intr = PinholeCameraMatHW(**intr_dict)
-                    elif camera_model.lower() == 'opencv':
-                        distortion = data['distortion']
-                        intr_dict['mat'] = CameraMatrix3x3(data['intr'][..., :3, :3], dtype=torch.float, device=device)
-                        intr_dict['distortion'] = make_vector(distortion.shape[-1])(distortion, dtype=torch.float, device=device)
-                        intr = OpenCVCameraMatHW(**intr_dict)
-                    elif camera_model.lower() == 'fisheye':
-                        distortion = data['distortion']
-                        intr_dict['mat'] = CameraMatrix3x3(data['intr'][..., :3, :3], dtype=torch.float, device=device)
-                        intr_dict['distortion'] = make_vector(distortion.shape[-1])(distortion, dtype=torch.float, device=device)
-                        intr = FisheyeCameraMatHW(**intr_dict)
-                    else:
-                        raise RuntimeError(f"Invalid camera_model={camera_model}")
-                    d.update(intr=intr)
-                if 'transform' in data: d.update(transform=TransformMat4x4(data['transform'], dtype=torch.float, device=device))
-                if 'timestamp' in data: d.update(timestamp=Scalar(data['timestamp'], device=device))
-                if 'global_frame_ind' in data: d.update(global_frame_ind=Scalar(data['global_frame_ind'], device=device))
-                if 'exposure' in data: d.update(exposure=Scalar(data['exposure'], device=device))
-                o.load_attr_segment(n_frames=odict['n_frames'], start_frame=odict.get('start_frame', 0), **d)
-                o.finish_attr_segments()
+            # Load observer attr data
+            o.load_from_odict(self.n_frames, odict, default_global_ts=parent.frame_global_ts, device=device)
+            # Add node to scene_graph
             self.add_node(o, parent=parent)
             # Recursively load node's childrens
             if 'children' in odict:
@@ -250,6 +396,10 @@ class Scene(object):
                     load_observers(cid, cdict, parent=o)
         for oid, odict in scenario['observers'].items():
             load_observers(oid, odict, parent=self.root)
+
+        # NOTE: Check which node uses the default timestamps
+        # for o in self.all_nodes:
+        #     print(o.id, torch.equal(o.frame_global_ts, self.frame_global_ts))
 
     def load_from_scenario_file(self, scenario_file: str, device=None):
         """
@@ -282,20 +432,42 @@ class Scene(object):
         """
         Load the corresponding asset models for each node in the this scene from the asset bank.
         """
-        from app.models.base import AssetModelMixin # To avoid circular import
+        from app.models.asset_base import AssetModelMixin # To avoid circular import
         self.asset_bank = asset_bank
+        
+        #---- Load object-level models
         for class_name, obj_group in self.all_nodes_by_class_name.items():
-            # NOTE: The same functionality with asset_bank.compute_model_id
+            # NOTE: The same functionality with asset_bank.asset_compute_id
             if (cfg:=asset_bank.class_name_configs.get(class_name, None)) is not None:
                 model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
                 for o in obj_group:
-                    model_id = model_class.compute_model_id(scene=self, obj=o, class_name=class_name)
-                    o.model = self.asset_bank[model_id]
+                    model_id = model_class.asset_compute_id(scene=self, obj=o, class_name=class_name)
+                    o.model = asset_bank[model_id]
                     self.add_node_to_drawable(o)
-        self.asset_bank.load_per_scene_models(self)
-
-    def __len__(self):
-        return self.n_frames
+        
+        #---- Load scene-level models
+        # LearnableParams, for pose-refinement and intrinsic's self-calibration, etc.
+        class_name = 'LearnableParams'
+        if (cfg := asset_bank.class_name_configs.get(class_name, None)) is not None:
+            model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
+            model_id = model_class.asset_compute_id(scene=self, obj=None, class_name=class_name)
+            model = asset_bank[model_id]
+            # NOTE: !!! Important !!! Models from asset_bank might be initialized with other scene(s)
+            model.scene = self
+            if model.is_enabled:
+                # NOTE: Make sure the learnable params are correctly loaded into current scene's nodes' frame_data
+                #       This is essential when replicating scenes for render_parallel
+                model.enable(self) 
+            self.learnable_params = model
+        # Per-frame image appearance embeddings
+        class_name = 'ImageEmbeddings'
+        if (cfg := asset_bank.class_name_configs.get(class_name, None)) is not None:
+            model_class: Type[AssetModelMixin] = import_str(cfg.model_class)
+            model_id = model_class.asset_compute_id(scene=self, obj=None, class_name=class_name)
+            model = asset_bank[model_id]
+            # NOTE: !!! Important !!! Models from asset_bank might be initialized with other scene(s)
+            model.scene = self
+            self.image_embeddings = model
 
     #------------------------------------------------------------------
     #----------------------  Node management
@@ -322,6 +494,10 @@ class Scene(object):
         if class_name not in self.all_nodes_by_class_name.keys():
             self.all_nodes_by_class_name[class_name] = IDListedDict()
         self.all_nodes_by_class_name[class_name][node.id] = node
+        
+        # Timestamps
+        if node.frame_global_ts is None and parent is not None and parent.frame_global_ts is not None:
+            node.frame_global_ts = parent.frame_global_ts.clone()
         
         # Drawables
         if node.model is not None:
@@ -371,28 +547,28 @@ class Scene(object):
     # @profile
     def get_drawables(self, only_valid=True) -> IDListedDict[SceneNode]:
         if only_valid:
-            return IDListedDict([o for o in self.drawables if o.valid])
+            return IDListedDict([o for o in self.drawables if o.i_valid])
         else:
             return self.drawables
     # @profile
     def get_drawable_groups_by_class_name(self, class_name: str, only_valid=True) -> IDListedDict[SceneNode]:
         if class_name in self.drawable_groups_by_class_name.keys():
             if only_valid:
-                return IDListedDict([o for o in self.drawable_groups_by_class_name[class_name] if o.valid])
+                return IDListedDict([o for o in self.drawable_groups_by_class_name[class_name] if o.i_valid])
             else:
                 return self.drawable_groups_by_class_name[class_name]
         else:
             return IDListedDict()
     def get_drawable_groups_by_class_name_list(self, class_name_list: List[str], only_valid=True) -> IDListedDict[SceneNode]:
         if only_valid:
-            node_list = [o for o in self.drawables if o.valid and o.class_name in class_name_list]
+            node_list = [o for o in self.drawables if o.i_valid and o.class_name in class_name_list]
         else:
             node_list = [o for o in self.drawables if o.class_name in class_name_list]
         return IDListedDict(node_list)
     # @profile
     def get_drawable_groups_by_model_id(self, model_id: str, only_valid=True) -> IDListedDict[SceneNode]:
         if only_valid:
-            return IDListedDict([o for o in self.drawable_groups_by_model_id[model_id] if o.valid])
+            return IDListedDict([o for o in self.drawable_groups_by_model_id[model_id] if o.i_valid])
         else:
             return self.drawable_groups_by_model_id[model_id]
     @staticmethod
@@ -429,14 +605,14 @@ class Scene(object):
     # @profile
     def get_observers(self, only_valid=True) -> IDListedDict[SceneNode]:
         if only_valid:
-            return IDListedDict([o for o in self.observers if o.valid])
+            return IDListedDict([o for o in self.observers if o.i_valid])
         else:
             return self.observers
     # @profile
     def get_observer_groups_by_class_name(self, class_name: str, only_valid=True) -> IDListedDict[SceneNode]:
         if class_name in self.observer_groups_by_class_name.keys():
             if only_valid:
-                return IDListedDict([o for o in self.observer_groups_by_class_name[class_name] if o.valid])
+                return IDListedDict([o for o in self.observer_groups_by_class_name[class_name] if o.i_valid])
             else:
                 return self.observer_groups_by_class_name[class_name]
         else:
@@ -444,7 +620,7 @@ class Scene(object):
 
     def get_cameras(self, only_valid=True) -> IDListedDict[Camera]:
         if only_valid:
-            return IDListedDict([o for o in self.observer_groups_by_class_name['Camera'] if o.valid])
+            return IDListedDict([o for o in self.observer_groups_by_class_name['Camera'] if o.i_valid])
         else:
             return self.observer_groups_by_class_name['Camera']
 
@@ -464,22 +640,41 @@ class Scene(object):
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
-                rays_o_o: [B_object, ..., 3], Ray origins in object local coords
-                rays_d_o: [B_object, ..., 3], Ray directions in object local coords
+                rays_o_o: [num_objs, ..., 3], Ray origins in object local coords
+                rays_d_o: [num_objs, ..., 3], Ray directions in object local coords
         """
+        num_objs = len(node_list)
+        
         rotations = [obj.world_transform.rotation() for obj in node_list]
         translations = [obj.world_transform.translation() for obj in node_list]
-        scales = [obj.scale.ratio() for obj in node_list]
-        # for obj in groups:
-        #     rotations.append(obj.world_transform.rotation())
-        #     translations.append(obj.world_transform.translation())
-        #     scales.append(obj.scale.ratio())
-        rotations_inv = torch.stack(rotations, 0).transpose(-1,-2).unsqueeze(-3)
-        translations = torch.stack(translations, 0).unsqueeze(-2)
-        scales = torch.stack(scales, 0).unsqueeze(-2)
+        scales = [obj.scale.vec_3() for obj in node_list]
+
+        rotations_inv = torch.stack(rotations, 0).transpose(-1,-2).view(num_objs, -1, 3, 3)
+        translations = torch.stack(translations, 0).view(num_objs, -1, 3)
+        scales = torch.stack(scales, 0).view(num_objs, -1, 3)
+        """
+        DEBUG:
+
+        [*] When slice_at single frame_ind:
+            rotations_inv:              [num_objs, 3, 3]    -> [num_objs, 1, 3, 3]
+            translations:               [num_objs, 3]       -> [num_objs, 1, 3]
+            scales:                     [num_objs, 3]       -> [num_objs, 1, 3]
+            rays_o/rays_d:              [num_rays, 3]
+            i_valid_flags:              [] (e.g. node_list[0].i_valid_flags)
+        
+        [*] When slice_at joint frame_ind and pixel locations:
+            rotations_inv:              [num_objs, num_rays, 3, 3]
+            translations:               [num_objs, num_rays, 3]
+            scales:                     [num_objs, num_rays, 3]
+            rays_o/rays_d:              [num_rays, 3]
+            i_valid_flags:              [num_rays]
+
+        """
         
         # rays_o_o = torch.einsum('...ij,...j->...i', rotations_inv, rays_o.unsqueeze(0)-translations)
         # rays_d_o = torch.einsum('...ij,...j->...i', rotations_inv, rays_d.unsqueeze(0))
+        
+        # [num_objs, num_rays, 3]
         rays_o_o = (rotations_inv * (rays_o.unsqueeze(0)-translations).unsqueeze(-2)).sum(-1)
         rays_d_o = (rotations_inv * rays_d[None,...,None,:]).sum(-1)
         
@@ -505,7 +700,7 @@ class Scene(object):
         """
         rotations_inv = node.world_transform.rotation().transpose(-1,-2)
         translations = node.world_transform.translation()
-        scales = node.scale.ratio()
+        scales = node.scale.vec_3()
         
         # [3, 3] @ [..., 1, 3]
         rays_o = (rotations_inv * (rays_o - translations).unsqueeze(-2)).sum(-1) / scales
@@ -554,7 +749,7 @@ class Scene(object):
         frustum_extend_pts = []
         cam_poses = []
 
-        self.frozen_at_full()
+        self.slice_at_full()
         cam0_poses = cams[0].world_transform.mat_4x4()
         for cam in cams:
             cam_poses.append(cam.world_transform.mat_4x4())
@@ -576,7 +771,7 @@ class Scene(object):
         return ret
 
     #------------------------------------------------------------------
-    #----------------------  Misc
+    #----------------------  Pytorch Misc
     def _apply(self, fn):
         # NOTE: Already inplace
         for k in self.all_nodes.keys():
@@ -608,7 +803,7 @@ class Scene(object):
     #--------------- DEBUG Functionalities ----------------
     #------------------------------------------------------
     @torch.no_grad()
-    def debug_vis_scene_graph(self, frame_ind=None, arrow_length: float = 4.0, font_scale: float = 0.5):
+    def debug_vis_scene_graph(self, frame_ind=None, timestamp=None, arrow_length: float = 4.0, font_scale: float = 0.5):
         from nr3d_lib.plot import create_camera_frustum_o3d
         import open3d as o3d
         import open3d.visualization.gui as gui
@@ -645,7 +840,10 @@ class Scene(object):
         mat.shader = "defaultUnlit"
         
         if frame_ind is not None:
-            self.frozen_at(frame_ind)
+            self.slice_at(frame_ind)
+        elif timestamp is not None:
+            self.interp_at(timestamp)
+        
         cam0: Camera = self.get_observer_groups_by_class_name('Camera', False)['camera_FRONT']
         all_drawables = self.get_drawables(True)
         filtered_drawables = IDListedDict(cam0.filter_drawable_groups(all_drawables))
@@ -668,7 +866,7 @@ class Scene(object):
             """
             # nonlocal things_to_draw
             nonlocal geometry_camera
-            if o.valid:
+            if o.i_valid:
                 #---- Coordinate frame
                 coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=arrow_length)
                 # coord_frame.compute_vertex_normals()
@@ -698,13 +896,13 @@ class Scene(object):
                     widget3d.scene.add_geometry(f"{o.id}.frustum", geometry_camera, line_mat)
                     
                 #---- Draw OBB, if needed
-                # if o.model_BSPH is not None:
-                if o.attr_array is not None and 'scale' in o.attr_array.subattr.keys():
+                # if o.model_bounding_sphere is not None:
+                if o.frame_data is not None and 'scale' in o.frame_data.subattr.keys():
                     # OBB
                     OBB = o3d.geometry.OrientedBoundingBox(
                         center=o.world_transform.translation().data.cpu().numpy(),
                         R=o.world_transform.rotation().data.cpu().numpy(),
-                        extent=o.scale.ratio().data.cpu().numpy()
+                        extent=o.scale.vec_3().data.cpu().numpy()
                     )
                     # OBB.compute_vertex_normals()
                     
@@ -750,7 +948,7 @@ class Scene(object):
         widget3d.setup_camera(60.0, bbox, bbox.get_center())
         app.run()
         
-        if frame_ind is not None:
+        if frame_ind is not None or timestamp is not None:
             self.unfrozen()
 
     @torch.no_grad()
@@ -763,7 +961,7 @@ class Scene(object):
         from nr3d_lib.plot import create_camera_frustum_vedo
         
         fi = torch.arange(len(self), device=self.device, dtype=torch.long)
-        self.frozen_at(fi)
+        self.slice_at(fi)
         
         if 'cam_id_list' in self.metas.keys():
             cam0 = self.observer_groups_by_class_name['Camera'][self.metas['cam_id_list'][0]]
@@ -789,11 +987,11 @@ class Scene(object):
         self.unfrozen()
         
         veh_boxes = []
-        self.frozen_at(plot_details_at)
+        self.slice_at(plot_details_at)
         for node in self.all_nodes_by_class_name['Vehicle']:
-            if not node.valid:
+            if not node.i_valid:
                 continue
-            scale = node.scale.ratio().data.cpu().numpy()
+            scale = node.scale.vec_3().data.cpu().numpy()
             bound = np.stack([-scale/2.,scale/2.], axis=-1).reshape(6)
             box = vedo.Box(size=bound)
             box.apply_transform(node.world_transform.mat_4x4().data.cpu().numpy())
@@ -818,12 +1016,13 @@ class Scene(object):
         plot_lidar = False, # Plot lidar observations (pointcloud)
         lidar_pts_downsample: int = 2, # In case lidar pts are too dense. Set to 1 to plot all
         mesh_file: str = None, # Filepath to the mesh
-        extra_draw: List[Literal['main.occ_grid']] = [], 
+        fg_classnames: List[str] = ['Vehicle', 'Pedestrian'], 
     ):
         if plot_lidar or plot_image:
             assert scene_dataloader is not None, "Need scene_dataloader to plot lidar / camera data"
         
         import vedo
+        from app.resources.observers import MultiRaysLidarBundle
         from nr3d_lib.plot import create_camera_frustum_vedo, get_n_ind_pallete
                 
         # Setup the scene       
@@ -840,7 +1039,7 @@ class Scene(object):
             surf.color('gray8')
 
         #---- Plot camera frustums
-        self.frozen_at(0)
+        self.slice_at(0)
         cam_actors = {}
         colors = get_n_ind_pallete(len(self.observer_groups_by_class_name['Camera'].keys()))
         for ci, (cam_id, cam_node) in enumerate(self.observer_groups_by_class_name['Camera'].items()):
@@ -858,7 +1057,7 @@ class Scene(object):
         main_label = None
         main_occ_grid = None
         if main_obj.model is not None and main_obj.model.space is not None:
-            aabb = (main_obj.scale.ratio() * main_obj.model.space.aabb).data.cpu().numpy()
+            aabb = (main_obj.scale.vec_3() * main_obj.model.space.aabb).data.cpu().numpy()
         elif 'aabb' in self.metas:
             # A nice alternative aabb choice when models are not available
             aabb = self.metas['aabb']
@@ -888,7 +1087,7 @@ class Scene(object):
             main_label = vedo.Text3D(f"{main_obj.class_name}:{label_str}", pos=corner_in_world, s=1, c='black', literal=True)
             main_label.follow_camera(plt.camera) # Use plt's active camera
 
-        if main_obj.model is not None and isinstance(getattr(main_obj.model, 'accel', None), OccupancyGridAS):
+        if main_obj.model is not None and isinstance(getattr(main_obj.model, 'accel', None), OccGridAccel):
             accel = main_obj.model.accel
             main_occ_grid = accel.debug_vis(draw=False)
             if main_occ_grid is not None:
@@ -897,7 +1096,7 @@ class Scene(object):
         def handle_timer(event):
             nonlocal fi_counter, node_actors, node_labels, txt2d, lidar_pts, lidar_pts_downsample
             fi = fi_counter % len(self) # Replay again and agian ...
-            self.frozen_at(fi)
+            self.slice_at(fi)
             #---- Set camera pose
             for cam_id, cam_node in self.observer_groups_by_class_name['Camera'].items():
                 cam_actors[cam_id].apply_transform(cam_node.world_transform.mat_4x4().data.cpu().numpy())
@@ -909,58 +1108,74 @@ class Scene(object):
                 node_labels.clear()
             
             #---- Plot dynamic objects
-            for oid, node in self.all_nodes_by_class_name.get('Vehicle', {}).items():
-                if not node.valid:
-                    continue
-                
-                # Add object boxes
-                scale = node.scale.ratio().data.cpu().numpy()
-                bound = np.stack([-scale/2.,scale/2.], axis=-1).reshape(6)
-                box = vedo.Box(size=bound)
-                box.apply_transform(node.world_transform.mat_4x4().data.cpu().numpy())
-                
-                # Add box label
-                label_str = node.id[:6]
-                label = vedo.Text3D(f"{node.class_name}:{label_str}", pos=box.points()[0], s=1, c='black', literal=True)
-                label.follow_camera(plt.camera) # Use plt's active camera
-                
-                # Mark dynamic objects to be red boxes and labels; others will be black
-                if 'dynamic_stats' in self.metas and oid in self.metas['dynamic_stats'][node.class_name]['is_dynamic']:
-                    box.color('red6')
-                    box.lw(4)
-                    label.color('red6')
-                else:
-                    box.color('black')
-                    box.lw(3)
-                    label.color('black')
-                box.wireframe() # Only plot edges of box 
-                box.lighting('off')
+            for cls_name in fg_classnames:
+                for oid, node in self.all_nodes_by_class_name.get(cls_name, {}).items():
+                    if not node.i_valid:
+                        continue
+                    
+                    # Add object boxes
+                    scale = node.scale.vec_3().data.cpu().numpy()
+                    bound = np.stack([-scale/2.,scale/2.], axis=-1).reshape(6)
+                    box = vedo.Box(size=bound)
+                    box.apply_transform(node.world_transform.mat_4x4().data.cpu().numpy())
+                    
+                    # Add box label
+                    label_str = node.id[:6]
+                    label = vedo.Text3D(f"{node.class_name}:{label_str}", pos=box.points()[0], s=1, c='black', literal=True)
+                    label.follow_camera(plt.camera) # Use plt's active camera
+                    
+                    # Mark dynamic objects to be red boxes and labels; others will be black
+                    if 'dynamic_stats' in self.metas and oid in self.metas['dynamic_stats'][node.class_name]['is_dynamic']:
+                        box.color('red6')
+                        box.lw(4)
+                        label.color('red6')
+                    else:
+                        box.color('black')
+                        box.lw(3)
+                        label.color('black')
+                    box.wireframe() # Only plot edges of box 
+                    box.lighting('off')
 
-                # Do not assemble label with box (will break follow_camera)
-                node_labels.append(label)
-                
-                # Box local coornidate frame
-                ax_length = 2.
-                ax = vedo.Arrow([0,0,0], [ax_length,0,0], c='r')
-                ay = vedo.Arrow([0,0,0], [0,ax_length,0], c='g')
-                az = vedo.Arrow([0,0,0], [0,0,ax_length], c='b')
-                axes = vedo.Assembly(ax,ay,az)
-                # axes.lighting('off')
-                axes.apply_transform(node.world_transform.mat_4x4().data.cpu().numpy())
-                
-                box = vedo.Assembly(box, axes)
-                # box.lighting('off')
-                node_actors[oid] = box
+                    # Do not assemble label with box (will break follow_camera)
+                    node_labels.append(label)
+                    
+                    # Box local coornidate frame
+                    ax_length = 2.
+                    ax = vedo.Arrow([0,0,0], [ax_length,0,0], c='r')
+                    ay = vedo.Arrow([0,0,0], [0,ax_length,0], c='g')
+                    az = vedo.Arrow([0,0,0], [0,0,ax_length], c='b')
+                    axes = vedo.Assembly(ax,ay,az)
+                    # axes.lighting('off')
+                    axes.apply_transform(node.world_transform.mat_4x4().data.cpu().numpy())
+                    
+                    box = vedo.Assembly(box, axes)
+                    # box.lighting('off')
+                    node_actors[oid] = box
 
             #---- Plot lidar pointcloud
             if plot_lidar:
                 lidar_pts_downsample = int(lidar_pts_downsample)
                 if fi_counter > 0:
                     plt.remove(lidar_pts)
-                lidar0 = self.all_nodes_by_class_name['RaysLidar'][scene_dataloader.lidar_id_list[0]]
-                lidar_data = scene_dataloader.get_lidar_gts(self.id, lidar0.id, fi, filter_if_configured=False, device=self.device)
-                pts = torch.addcmul(lidar_data['rays_o'][::lidar_pts_downsample], lidar_data['rays_d'][::lidar_pts_downsample], lidar_data['ranges'][::lidar_pts_downsample].unsqueeze(-1))
-                pts_in_world = lidar0.world_transform.forward(pts).data.cpu().numpy()
+                
+                #---- Option: Use zero-th lidar only
+                # lidar0 = self.all_nodes_by_class_name['RaysLidar'][scene_dataloader.lidar_id_list[0]]
+                # lidar_data = scene_dataloader.get_lidar_gts(self.id, lidar0.id, fi, filter_if_configured=False, device=self.device)
+                # pts = torch.addcmul(lidar_data['rays_o'][::lidar_pts_downsample], lidar_data['rays_d'][::lidar_pts_downsample], lidar_data['ranges'][::lidar_pts_downsample].unsqueeze(-1))
+                # pts_in_world = lidar0.world_transform.forward(pts).data.cpu().numpy()
+                # pts_c = (vedo.color_map(pts_in_world[:, 2], 'rainbow', vmin=-2., vmax=9.) * 255.).clip(0,255).astype(np.uint8)
+                # pts_c = np.concatenate([pts_c, np.full_like(pts_c[:,:1], 255)], axis=-1) # RGBA is ~50x faster
+                # lidar_pts = vedo.Points(pts_in_world, c=pts_c, r=2)
+                # lidar_pts.lighting('off')
+                
+                #---- Option: Use merged data of all lidars
+                lidar_data = scene_dataloader.get_merged_lidar_gts(self.id, fi, device=self.device, filter_if_configured=False)
+                lidar_data = {k: v[lidar_data['ranges']>0][::lidar_pts_downsample] for k, v in lidar_data.items()} # Downsample lidar points
+                lidars = [self.observers[lid] for lid in scene_dataloader.lidar_id_list]
+                lidar = MultiRaysLidarBundle(lidars)
+                pts = torch.addcmul(lidar_data['rays_o'], lidar_data['rays_d'], lidar_data['ranges'].unsqueeze(-1))
+                l2w = lidar.world_transform[lidar_data['li']] # Local to world transform of each point
+                pts_in_world = l2w.forward(pts).data.cpu().numpy()
                 pts_c = (vedo.color_map(pts_in_world[:, 2], 'rainbow', vmin=-2., vmax=9.) * 255.).clip(0,255).astype(np.uint8)
                 pts_c = np.concatenate([pts_c, np.full_like(pts_c[:,:1], 255)], axis=-1) # RGBA is ~50x faster
                 lidar_pts = vedo.Points(pts_in_world, c=pts_c, r=2)
@@ -976,7 +1191,7 @@ class Scene(object):
                     cam_node.intr.set_downscale(bypass_downscale)
                     intr = cam_node.intr.mat_3x3().data.cpu().numpy()
                     c2w = cam_node.world_transform.mat_4x4().data.cpu().numpy()
-                    rgb = scene_dataloader.get_rgb(self.id, cam_id, fi, device=torch.device('cpu'), bypass_downscale=bypass_downscale)['rgb'].numpy()
+                    rgb = scene_dataloader.get_image_and_metas(self.id, cam_id, fi, device=torch.device('cpu'), bypass_downscale=bypass_downscale)['image_rgb'].numpy()
                     rgb = (rgb * 255.).clip(0,255).astype(np.uint8)
                     H, W, _ = rgb.shape
                     hfov = np.rad2deg(np.arctan(W / 2. / intr[0, 0]) * 2.)

@@ -2,7 +2,7 @@
 @file   lidars.py
 @author Xinyu Cai, Shanghai AI Lab & Jianfei Guo, Shanghai AI Lab
 @brief  Special kinds of SceneNode: lidar observers.
-        - RaysLidar / MultiRaysLidarBundle: Dataset pre-calculated lidar model.
+        - RaysLidar / MultiRaysLidarBundle: Dataset pre-computed lidar model.
         - Lidar: self-defined lidar simulation model.
 """
 
@@ -34,14 +34,20 @@ class RaysLidar(SceneNode):
     """
     Lidar that directly load rays from dataset
     """
-    def __init__(self, unique_id: str, scene=..., device=torch.device('cuda'), dtype=torch.float):
+    def __init__(self, unique_id: str, scene=..., device=None, dtype=torch.float):
         super().__init__(unique_id=unique_id, class_name='RaysLidar', scene=scene, device=device, dtype=dtype)
         # Additional attributes
         self.near = None
         self.far = None
+        self.rolling_shutter_effect = None
+    
     # @profile
     def update(self):
         SceneNode.update(self)
+
+    def _parse_attr_data(self, odict: dict, data: dict, device=None):
+        # NOTE: Might parse some special data if needed. Currently just invoke the base class' method
+        return super()._parse_attr_data(odict, data, device)
 
     def filter_drawable_groups(self, drawables: List[SceneNode]):
         return drawables
@@ -49,54 +55,124 @@ class RaysLidar(SceneNode):
     def _get_selected_rays_ov(self, rays_o: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         - support single frame:     ✓
-        - support batched frames:   ✓      `...` means arbitary prefix-batch-dims (self.frozen_prefix)
-        """
-        l2ws, prefix = self.world_transform, self.frozen_prefix
-        # If batched: Assume `rays_o/rays_d` has the same prefix dims as self.frozen_prefix;
+        - support batched frames:   ✓      `...` means arbitary prefix-dims (i.e. `self.i_prefix`)
+        """        
+        l2ws = self.world_transform
+        # If batched: Assume `rays_o/rays_d` has the same prefix dims as self.i_prefix;
         rays_o, rays_d = l2ws.forward(rays_o), l2ws.rotate(rays_d)
         return rays_o, rays_d
+    
     def _get_selected_rays_iov(self, i: torch.Tensor, rays_o: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """ The meaning of `i` varies differently in different use cases. \
+            There are two possible use cases: \
+            - RaysLidar @ batched frames; where `i` indicates the indices of multiple frames. \
+            - MultiRaysLidarBundle @ single frame; where `i` indicates the indices of multiple lidars. \
         """
-        - support single frame:     x      NOTE: This function should only be called when in batched.
-        - support batched frames:   ✓
-        """
-        l2ws = self.world_transform[i]
+        prefix = tuple(i.shape)
+        if len(self.i_prefix) == 0:
+            l2ws = self.world_transform.tile(prefix)
+        else:
+            l2ws = self.world_transform[i]
+        
         rays_o, rays_d = l2ws.forward(rays_o), l2ws.rotate(rays_d)
         return rays_o, rays_d
-    def get_selected_rays(self, *, i: torch.Tensor = None, rays_o: torch.Tensor = ..., rays_d: torch.Tensor = ...):
-        if i is not None:
-            return self._get_selected_rays_iov(i, rays_o, rays_d)
+    
+    def get_selected_rays(self, *, sel: torch.Tensor = None, rays_o: torch.Tensor = ..., rays_d: torch.Tensor = ...):
+        """ Convert rays in lidar coords to world coords. \
+            NOTE: In common cases, lidars and worlds have different coordinate systems; \
+                In some cases, lidars and worlds can share the same coordinate system. \
+                The actual behavior depends on the definition of the lidar's transform to its parent \
+                    (and their parents' transform to their ancestors, if any.) \
+
+        Args:
+            sel (torch.Tensor, optional): [..., ] The given selector indices to slice the attr's prefix-dim. \
+                Defaults to None.
+            rays_o (torch.Tensor, optional): Lidar beams' origin, in lidar local coords. Defaults to ....
+            rays_d (torch.Tensor, optional): Lidar beams' direction, in lidar local coords. Defaults to ....
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: [..., 3], [..., 3] Lidar beams' origin and direction in world coords.
+        """
+        if sel is not None:
+            return self._get_selected_rays_iov(sel=sel, rays_o=rays_o, rays_d=rays_d)
         else:
-            return self._get_selected_rays_ov(rays_o, rays_d)
+            return self._get_selected_rays_ov(rays_o=rays_o, rays_d=rays_d)
+
+    def get_timestamps(self, *, fi: torch.Tensor = None, ts_base: torch.Tensor = None, theta_phi: torch.Tensor = None):
+        assert bool(ts_base is not None) != bool(fi is not None), f"You should specify one of [fi, ts_base]"
+        if ts_base is None:
+            ts_base = self.frame_global_ts[fi]
+        
+        if not self.rolling_shutter_effect:
+            return ts_base
+        
+        """
+        NOTE:
+        Currently, the rolling shutter effect of LiDARs are already accounted for by the per-beam ego-car pose correction.
+        However, we should still freeze the scene at the correct timestamps to interpolate correct poses for dynamic objects.
+        This relies on more detailed modeling of the Dataset's LiDAR, and will be left as a TODO for now.
+        """
+        raise NotImplementedError
+        assert theta_phi is not None, \
+            f"Requires lidar beam angles `theta_phi` to calculate timestamp for each ray to account for rolling shutter effect."
+
+    @staticmethod
+    def make_bundle(l: List['RaysLidar']):
+        return MultiRaysLidarBundle(l)
 
 class MultiRaysLidarBundle(object):
-    def __init__(self, lidars: List[RaysLidar]):
+    def __init__(self, lidars: List[RaysLidar], li: torch.LongTensor = None):
         self.class_name = 'RaysLidar' # TODO
+
+        # # Whether the lidars are frozen at multiple frames
+        # self.frozen_at_multiple = False
         
         for lidar in lidars:
-            assert is_scalar(lidar.i), "Only support bundling cameras that are frozen at a single frame_ind."
+            if not lidar.i_is_single:
+                assert li is not None, \
+                    f"Requires `li` to gather multiple lidars when frozen at multiple frames."
+                assert [*li.shape] == list(lidar.i_prefix), \
+                    f"`li` (shape={[*li.shape]}) should have the same shape with "\
+                        f"the current frozen prefix `lidar.i_prefix`={list(lidar.i_prefix)}"
+                # self.frozen_at_multiple = True
+                
         self.dtype = lidar.dtype
         self.device = lidar.device
         self.scene = lidar.scene
         
         self.lidars = lidars
+        self.id = [lidar.id for lidar in lidars]
 
         nears = [lidar.near for lidar in lidars if lidar.near is not None]
         fars = [lidar.far for lidar in lidars if lidar.far is not None]
         self.near = None if len(nears) == 0 else min(nears)
         self.far = None if len(fars) == 0 else max(fars)
         
-        world_transforms = [lidar.world_transform for lidar in lidars]
-        self.world_transform = type(lidars[0].world_transform).stack(world_transforms)
-        
-        self.frozen_prefix = (len(lidars),)
+        lst_world_transform = [lidar.world_transform for lidar in lidars]
+        world_transform = type(lidars[0].world_transform).stack(lst_world_transform)
+
+        # Whether the lidar id selection is already done when grouping multiple lidars.
+        self.already_selected = False
+        # if self.frozen_at_multiple:
+        if li is not None:
+            # Use `li` to select the lidars, keeping other dimensions untouched (gather)
+            self.already_selected = True
+            self.i_prefix = (*lidar.i_prefix, )
+            self.world_transform = world_transform.take_along_dim(li.unsqueeze(0), dim=0)[0]
+        else:
+            self.i_prefix = (len(lidars), *lidar.i_prefix)
+            self.world_transform = world_transform
 
     def filter_drawable_groups(self, drawables: List[SceneNode]):
         return drawables
 
-    def get_selected_rays(self, *, i: torch.Tensor = None, rays_o: torch.Tensor = ..., rays_d: torch.Tensor = ...):
-        assert i is not None, "Only support i-ov selecting"
-        return RaysLidar._get_selected_rays_iov(self, i, rays_o, rays_d)
+    def get_selected_rays(self, *, sel: torch.Tensor = None, rays_o: torch.Tensor = ..., rays_d: torch.Tensor = ...):
+        if not self.already_selected:
+            assert sel is not None, "Only support [sel, rays_o, rays_d] input"
+            return RaysLidar._get_selected_rays_iov(self, i=sel, rays_o=rays_o, rays_d=rays_d)
+        else:
+            assert sel is None, "`li` is already given when instantiating. Do not specify `sel` again."
+            return RaysLidar._get_selected_rays_ov(self, rays_o=rays_o, rays_d=rays_d)
 
 class Lidar(SceneNode):
     """
@@ -104,7 +180,7 @@ class Lidar(SceneNode):
     """
     def __init__(
         self, unique_id: str, lidar_model: str=None, lidar_name: str=None, 
-        scene=..., device=torch.device('cuda'), dtype=torch.float, **lidar_params):
+        scene=..., device=None, dtype=torch.float, **lidar_params):
         super().__init__(unique_id, scene=scene, class_name='Lidar', device=device, dtype=dtype)
         self.near = lidar_params.get('near', 0.3)
         self.far = lidar_params.get('far', 120.0)
@@ -128,8 +204,9 @@ class Lidar(SceneNode):
 
     def filter_drawable_groups(self, drawables: List[SceneNode]):
         return drawables
-    def get_all_rays(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert len(self.frozen_prefix) == 0
+    
+    def get_all_rays(self, return_theta_phi=False, return_ts=False) -> List[torch.Tensor]:
+        assert len(self.i_prefix) == 0
         carla_to_opencv = self.carla_to_opencv.to(self.device)
         c2w = (self.world_transform.mat_4x4().unsqueeze(-1) * carla_to_opencv.unsqueeze(-3)).sum(-2)
         dx = c2w[:3, 0]
@@ -139,6 +216,8 @@ class Lidar(SceneNode):
             Ts, Ps = self.lidar_generator.get_Ts_Ps()
         else:
             Ts, Ps = torch.meshgrid(check_to_torch(self.thetas, ref=self), check_to_torch(self.phis, ref=self), indexing='xy')
+        theta_phi = torch.stack((Ts, Ps), dim=-1)
+        
         if self.lidar_generator and self.lidar_generator.lidar_name == 'bpearl':
             # rot = torch.tensor([[0,0,1],[0,1,0],[-1,0,0]],dtype=self.dtype,device=self.device) # y 90
             rays_d = (torch.cos(Ts))[..., None] * dx + (torch.sin(Ts) * torch.sin(Ps))[..., None] * dy + \
@@ -149,7 +228,44 @@ class Lidar(SceneNode):
         
         rays_o = torch.tile(c2w[:3, 3], [*Ts.shape,1]).view(-1, 3)
         rays_d = F.normalize(rays_d, dim=-1).view(-1,3)
-        return rays_o, rays_d
+        
+        ret = [rays_o, rays_d]
+        
+        if return_theta_phi:
+            ret.append(theta_phi)
+        
+        if return_ts:
+            if [*self.i_prefix] == list(rays_o.shape[:-1]):
+                rays_i = self.i
+            else:
+                lidar_i = self.i.item() if isinstance(self.i, (torch.Tensor, np.ndarray)) else self.i
+                rays_i = torch.full(rays_o.shape[:-1], lidar_i, dtype=torch.long, device=rays_o.device)
+            if self.i_is_timestamp: # `self.i` represents timestamps
+                rays_ts = self.get_timestamps(ts_base=rays_i, theta_phi=theta_phi)
+            else: # `self.i` represents frame indices
+                rays_ts = self.get_timestamps(fi=rays_i, theta_phi=theta_phi)
+            ret.append(rays_ts)
+        
+        return ret
+
+    def get_timestamps(
+        self, *, fi: torch.Tensor = None, ts_base: torch.Tensor = None, 
+        theta_phi: torch.Tensor = None):
+        
+        assert bool(ts_base is not None) != bool(fi is not None), f"You should specify one of [fi, ts_base]"
+        if ts_base is None:
+            ts_base = self.frame_global_ts[fi]
+        
+        if not self.rolling_shutter_effect:
+            return ts_base
+        
+        raise NotImplementedError
+        assert theta_phi is not None, \
+            f"Requires lidar beam angles `theta_phi` to calculate timestamp for each ray to account for rolling shutter effect."
+
+    @staticmethod
+    def make_bundle(l: List['Lidar']):
+        raise NotImplementedError
 
 class AbstractLidarGenerator:
     def __init__(self, lidar_model):

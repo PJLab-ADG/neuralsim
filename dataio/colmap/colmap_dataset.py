@@ -7,18 +7,18 @@
 import os
 import sys
 import numpy as np
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple, Union
 
 from nr3d_lib.config import ConfigDict
-from nr3d_lib.geometry.math import inverse_transform_matrix_np
-from nr3d_lib.geometry.normalize_views import normalize_multi_view
+from nr3d_lib.maths import inverse_transform_matrix_np
+from nr3d_lib.graphics.cameras import normalize_multi_view
 from nr3d_lib.utils import load_rgb, glob_imgs, get_image_size
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 from dataio.colmap.colmap_loader import *
 
-class COLMAPDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class COLMAPDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
 
@@ -117,7 +117,7 @@ class COLMAPDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -133,11 +133,14 @@ class COLMAPDataset(DatasetIO):
         )
         return scenario
 
+    def get_image_wh(self, scene_id: str, camera_id: str, frame_index: Union[int, List[int]]):
+        return self.hws_all[frame_index][::-1]
+
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         fpath = self.image_paths[frame_index]
         return load_rgb(fpath)
 
-    def get_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_depth(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         assert self.image_mono_depth_dirname is not None, "You should specify image_mono_depth_dirname"
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.data_dir, self.image_mono_depth_dirname, f'{img_name}.npz')
@@ -145,7 +148,7 @@ class COLMAPDataset(DatasetIO):
         depth = np.load(fpath)['arr_0'].astype(np.float32)
         return depth
 
-    def get_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_mono_normals(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         assert self.image_mono_normals_dirname is not None, "You should specify image_mono_normals_dirname"
         img_name = self.img_names[frame_index]
         fpath = os.path.join(self.data_dir, self.image_mono_normals_dirname, f'{img_name}.jpg')

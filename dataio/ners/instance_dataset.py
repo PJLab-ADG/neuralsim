@@ -13,7 +13,7 @@ from typing import Any, Dict, Literal
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.utils import get_image_size, load_rgb
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
 def rle_to_binary_mask(rle):
     """
@@ -32,8 +32,8 @@ def rle_to_binary_mask(rle):
         running_length += length
     return mask.reshape(rle["size"], order="F")
 
-class MVMCNeRSInstanceDataset(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class MVMCNeRSInstanceDataset(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
     
@@ -115,7 +115,7 @@ class MVMCNeRSInstanceDataset(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -134,5 +134,5 @@ class MVMCNeRSInstanceDataset(DatasetIO):
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         return load_rgb(self.image_paths[frame_index])
     
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         return self.masks[frame_index]

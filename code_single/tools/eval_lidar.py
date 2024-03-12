@@ -34,13 +34,13 @@ from nr3d_lib.checkpoint import sorted_ckpts
 from nr3d_lib.utils import cond_mkdir, import_str
 from nr3d_lib.config import ConfigDict, BaseConfig
 from nr3d_lib.models.spatial import AABBSpace, ForestBlockSpace
-from nr3d_lib.geometry import chamfer_distance_borrowed_from_pt3d as chamfer_distance
+from nr3d_lib.maths import chamfer_distance
 
 from app.renderers import SingleVolumeRenderer
 from app.resources.observers import RaysLidar, Camera, MultiCamBundle
 from app.resources import Scene, AssetBank, create_scene_bank, load_scene_bank
 
-from dataio.dataloader import SceneDataLoader
+from dataio.data_loader import SceneDataLoader
 
 LOG = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class LidarData:
 @torch.no_grad()
 def main_function(args: ConfigDict):
     exp_dir = args.exp_dir
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     dtype = torch.float32
 
     output_root = os.path.join(args.exp_dir, args.dirname)
@@ -66,7 +66,7 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     #--------------     Load     -----------------
     #---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     # Automatically load 'final_xxx.pt' or 'latest.pt'
     ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
     log.info("=> Use ckpt:" + str(ckpt_file))
@@ -81,9 +81,8 @@ def main_function(args: ConfigDict):
     #-----------     Asset Bank     --------------
     #---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank_trainval, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank_trainval, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     #---------------------------------------------
     #---  Test - Scene Bank Dataset & Loader  ----
@@ -129,8 +128,8 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     scene = scene_bank_test[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
     
     #---------------------------------------------
     #------------     Renderer     ---------------
@@ -172,7 +171,7 @@ def main_function(args: ConfigDict):
         num_frames = max(args.stop_frame - args.start_frame, 1)
     
     scene: Scene = scene_bank_test[0]
-    scene.frozen_at(args.start_frame)
+    scene.slice_at(args.start_frame)
     obj = scene.get_drawable_groups_by_class_name(scene.main_class_name, only_valid=False)[0]
     assert args.lidar_id in scene.observers, f"Invalid lidar_id={args.lidar_id},\n"\
         f"Current LiDARs: {list(scene.get_observer_groups_by_class_name('RaysLidar', False).keys())+list(scene.get_observer_groups_by_class_name('Lidar', False).keys())}"
@@ -206,7 +205,6 @@ def main_function(args: ConfigDict):
 
     @torch.no_grad()
     def filter_lidar_gts_in_scene_space(lidar_gt:  Dict[str, torch.Tensor], frame_ind: int):
-        assert scene.i == frame_ind
         pts_gt = torch.addcmul(lidar_gt['rays_o'], lidar_gt['rays_d'], lidar_gt['ranges'].unsqueeze(-1))
         pts_gt = lidar.world_transform(pts_gt)
         # From [world] to [obj]
@@ -225,7 +223,6 @@ def main_function(args: ConfigDict):
 
     @torch.no_grad()
     def filter_lidar_gts_toofar(lidar_gt:  Dict[str, torch.Tensor], frame_ind: int, too_far: float):
-        assert scene.i == frame_ind
         lidar_filter_inds = (lidar_gt['ranges'] <= too_far).nonzero()[..., 0]
         lidar_gt = {k: v[lidar_filter_inds] for k,v in lidar_gt.items()}
         return lidar_gt
@@ -249,7 +246,7 @@ def main_function(args: ConfigDict):
         rays_o_world, rays_d_world = lidar.get_selected_rays(rays_o=rays_o, rays_d=rays_d)
         
         lidar_pred = renderer.render(scene, rays=(rays_o_world, rays_d_world), observer=lidar, only_cr=True,
-                                    with_rgb=False, with_normal=False, render_per_obj=False,
+                                    with_rgb=False, with_normal=False, render_per_obj_individual=False,
                                     rayschunk=args.rayschunk, show_progress=args.progress)
         lidar_rays_acc = lidar_pred['rendered']['mask_volume']
         lidar_rays_depth = lidar_pred['rendered']['depth_volume']
@@ -406,7 +403,7 @@ def main_function(args: ConfigDict):
             lidar_gt = scene_dataloader.get_lidar_gts(scene.id, lidar.id, frame_ind, device=device, filter_if_configured=False)
             lidar_gt = scene_dataloader.filter_lidar_gts(scene.id, lidar.id, frame_ind, lidar_gt, inplace=False, **lidar_filter_kwargs)
 
-            scene.frozen_at(frame_ind)
+            scene.slice_at(frame_ind)
             if not args.no_filter_in_scene_space:
                 lidar_gt = filter_lidar_gts_in_scene_space(lidar_gt, frame_ind)
             if args.filter_toofar is not None:

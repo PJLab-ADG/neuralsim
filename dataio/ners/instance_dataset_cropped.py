@@ -14,7 +14,7 @@ from typing import Any, Dict, Literal
 from nr3d_lib.config import ConfigDict
 from nr3d_lib.utils import crop_image, get_image_size
 
-from dataio.dataset_io import DatasetIO
+from dataio.scene_dataset import SceneDataset
 
 def rle_to_binary_mask(rle):
     """
@@ -33,8 +33,8 @@ def rle_to_binary_mask(rle):
         running_length += length
     return mask.reshape(rle["size"], order="F")
 
-class MVMCNeRSInstanceDatasetCropped(DatasetIO):
-    def __init__(self, config: ConfigDict) -> None:
+class MVMCNeRSInstanceDatasetCropped(SceneDataset):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.populate(**config)
     
@@ -155,7 +155,7 @@ class MVMCNeRSInstanceDatasetCropped(DatasetIO):
                 hw=self.hws_all, 
                 intr=self.intrs_all,
                 transform=self.c2ws_all,
-                global_frame_ind=np.arange(self.n_images)
+                global_frame_inds=np.arange(self.n_images)
             )
         )
         obj = dict(
@@ -177,5 +177,5 @@ class MVMCNeRSInstanceDatasetCropped(DatasetIO):
         image = np.array(image.resize((self.crop_image_size, self.crop_image_size), Image.LANCZOS)) / 255.0
         return image
     
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+    def get_image_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
         return self.masks[frame_index]

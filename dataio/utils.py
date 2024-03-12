@@ -14,15 +14,15 @@ def clip_node_data(odict: dict, start, stop):
                 both under start <= ... < stop convention, i.e. item \in [start,stop)
     """
     assert 'data' in odict, "Only works with node with data"
-    if (start is None and stop is None) or ('global_frame_ind' not in odict['data'] and 'timestamp' not in odict['data']):
+    if (start is None and stop is None) or ('global_frame_inds' not in odict['data'] and 'global_timestamps' not in odict['data']):
         t = None
     else:
-        if 'global_frame_ind' in odict['data']:
+        if 'global_frame_inds' in odict['data']:
             assert (start is None or isinstance(start, int)) and (stop is None or isinstance(stop, int)), f"Please use frame ind clipping."
-            t = odict['data']['global_frame_ind']
+            t = odict['data']['global_frame_inds']
         else:
             assert (start is None or isinstance(start, float)) and (stop is None or isinstance(stop, float)), f"Please use timestamp clipping."
-            t = odict['data']['timestamp']
+            t = odict['data']['global_timestamps']
     
     if t is not None:
         if start is None:
@@ -41,13 +41,11 @@ def clip_node_data(odict: dict, start, stop):
         for k, v in odict['data'].items():
             odict['data'][k] = v[mask]
         odict['n_frames'] = np.sum(mask)
-        if 'global_frame_ind' in odict['data']:
-            # TODO: The current logic here, especially the calculation of `n_frames`,
-            #           is incorrect if node's data has a higher frame rate than the global frame rate (e.g., Waymo's ego_car);
-            #           In the future, consider implementation with float timestamps
+        if 'global_frame_inds' in odict['data']:
             if start is not None:
-                odict['data']['global_frame_ind'] -= start
-            odict['start_frame'] = np.min(odict['data']['global_frame_ind'])
+                # TODO: This only supports `start`, `stop` being frame inds, not ts
+                odict['data']['global_frame_inds'] -= start
+            odict['start_frame'] = np.min(odict['data']['global_frame_inds'])
     return odict
 
 def clip_node_segments(odict: dict, start, stop):
@@ -58,16 +56,16 @@ def clip_node_segments(odict: dict, start, stop):
     old_segs = odict.pop('segments')
     new_segs = []
     for seg in old_segs:
-        if (start is None and stop is None) or ('global_frame_ind' not in seg['data'] and 'timestamp' not in seg['data']):
+        if (start is None and stop is None) or ('global_frame_inds' not in seg['data'] and 'global_timestamps' not in seg['data']):
             new_segs.append(seg)
             continue
         else:
-            if 'global_frame_ind' in seg['data']:
+            if 'global_frame_inds' in seg['data']:
                 assert (start is None or isinstance(start, int)) and (stop is None or isinstance(stop, int)), f"Please use frame ind clipping."
-                t = seg['data']['global_frame_ind']
+                t = seg['data']['global_frame_inds']
             else:
                 assert (start is None or isinstance(start, float)) and (stop is None or isinstance(stop, float)), f"Please use timestamp clipping."
-                t = seg['data']['timestamp']
+                t = seg['data']['global_timestamps']
         
         if start is None:
             mask = t < stop
@@ -83,13 +81,11 @@ def clip_node_segments(odict: dict, start, stop):
         for k, v in seg['data'].items():
             seg['data'][k] = v[mask]
         seg['n_frames'] = np.sum(mask)
-        if 'global_frame_ind' in seg['data']:
-            # TODO: The current logic here, especially the calculation of `n_frames`,
-            #           is incorrect if node's data has a higher frame rate than the global frame rate (e.g., Waymo's ego_car);
-            #           In the future, consider implementation with float timestamps
+        if 'global_frame_inds' in seg['data']:
             if start is not None:
-                seg['data']['global_frame_ind'] -= start
-            seg['start_frame'] = np.min(seg['data']['global_frame_ind'])
+                # TODO: This only supports `start`, `stop` being frame inds, not ts
+                seg['data']['global_frame_inds'] -= start
+            seg['start_frame'] = np.min(seg['data']['global_frame_inds'])
         new_segs.append(seg)
     
     odict['segments'] = new_segs

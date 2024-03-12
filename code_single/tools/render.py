@@ -17,43 +17,43 @@ def set_env(depth: int):
 set_env(2)
 
 import os
-import copy
 import json
 import imageio
 import numpy as np
-from tqdm import tqdm
 from math import prod
+from tqdm import tqdm
 from glob import glob
 from icecream import ic
+from copy import deepcopy
 from datetime import datetime
 
 import torch
 
 from nr3d_lib.fmt import log
-from nr3d_lib.plot import color_depth
+from nr3d_lib.plot import color_depth, scene_flow_to_rgb
 from nr3d_lib.checkpoint import sorted_ckpts
 from nr3d_lib.config import ConfigDict, BaseConfig
-from nr3d_lib.utils import IDListedDict, cond_mkdir, import_str, cpu_resize
+from nr3d_lib.utils import IDListedDict, cond_mkdir, import_str, cpu_resize, pad_images_to_same_size
 
 from nr3d_lib.models.spatial import AABBSpace
-from nr3d_lib.models.spatial_accel import OccupancyGridAS
+from nr3d_lib.models.accelerations.occgrid_accel import OccGridAccel
 from nr3d_lib.models.attributes.transform import TransformMat4x4
 
 from app.renderers import SingleVolumeRenderer
 from app.resources.observers import Lidar, RaysLidar, Camera
 from app.resources import Scene, SceneNode, load_scene_bank, AssetBank, get_dataset_scenario
 
-from dataio.dataset_io import DatasetIO
-from dataio.dataloader import SceneDataLoader
+from dataio.scene_dataset import SceneDataset
+from dataio.data_loader import SceneDataLoader
 
 def main_function(args: ConfigDict):
     exp_dir = args.exp_dir
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
 
     #---------------------------------------------
     #--------------     Load     -----------------
     #---------------------------------------------
-    device = torch.device('cuda', 0)
+    device = torch.device('cuda')
     if (ckpt_file:=args.get('load_pt', None)) is None:
         # Automatically load 'final_xxx.pt' or 'latest.pt'
         ckpt_file = sorted_ckpts(os.path.join(args.exp_dir, 'ckpts'))[-1]
@@ -71,9 +71,8 @@ def main_function(args: ConfigDict):
     #-----------     Asset Bank     --------------
     #---------------------------------------------
     asset_bank = AssetBank(args.assetbank_cfg)
-    asset_bank.create_asset_bank(scene_bank, load=state_dict['asset_bank'], device=device)
-    asset_bank.to(device)
-    log.info(asset_bank)
+    asset_bank.create_asset_bank(scene_bank, load_state_dict=state_dict['asset_bank'], device=device)
+    # log.info(asset_bank)
 
     #---------------------------------------------
     #---     Load assets to scene objects     ----
@@ -81,8 +80,8 @@ def main_function(args: ConfigDict):
     # for scene in scene_bank:
     scene = scene_bank[0]
     scene.load_assets(asset_bank)
-    # !!! Only call preprocess_per_train_step when all assets are ready & loaded !
-    asset_bank.preprocess_per_train_step(args.training.num_iters) # NOTE: Finished training.
+    # !!! Only call training_before_per_step when all assets are ready & loaded !
+    asset_bank.training_before_per_step(args.training.num_iters) # NOTE: Finished training.
 
     # Fallsback to regular Mat4x4 for convenience
     # TODO
@@ -90,7 +89,7 @@ def main_function(args: ConfigDict):
     #---------------------------------------------
     #------     Scene Bank Dataset     -----------
     #---------------------------------------------
-    dataset_impl: DatasetIO = import_str(args.dataset_cfg.target)(args.dataset_cfg.param)
+    dataset_impl: SceneDataset = import_str(args.dataset_cfg.target)(args.dataset_cfg.param)
     if args.no_gt:
         args.training.dataloader.tags = {}
     args.training.dataloader.preload = False
@@ -108,7 +107,10 @@ def main_function(args: ConfigDict):
     renderer.eval()
     asset_bank.eval()
     renderer.config.rayschunk = args.rayschunk
-    renderer.config.with_normal = True
+    with_normal = renderer.config.get('with_normal', False)
+    with_flow = renderer.config.get('with_flow', False)
+    with_static_dynamic = renderer.config.setdefault('with_static_dynamic', False)
+    
     if args.depth_max is None:
         depth_max = renderer.config.far
     else:
@@ -156,11 +158,11 @@ def main_function(args: ConfigDict):
                 log.info(f"Video saved to {uri}")
             else:
                 if ".mp4" in uri:
-                    uri = f"{os.path.splitext(uri)[0]}.png"
+                    uri = f"{os.path.splitext(uri)[0]}.jpg"
                 imageio.imwrite(uri, frames[0], **kwargs)
                 log.info(f"Image saved to {uri}")
 
-    # Original / reference frame_inds
+    # Original / reference frame_ind
     if args.num_frames is not None:
         args.stop_frame = args.start_frame + args.num_frames
     else:
@@ -169,7 +171,7 @@ def main_function(args: ConfigDict):
     log.info(f"=> args.stop_frame is set to {args.stop_frame}")
     frame_ind_list = ref_frame_ind_list = np.arange(args.start_frame, args.stop_frame, 1).tolist()
     
-    # True frame_inds used in rendering (for replay or nvs)
+    # The actual frame_ind used in rendering (for replay or nvs)
     if args.nvs_path is None:
         current_mode = 'replay'
         num_frames = len(frame_ind_list)
@@ -181,7 +183,7 @@ def main_function(args: ConfigDict):
 
     if not args.no_gt:
         # Test correct.
-        ground_truth = scene_dataloader.get_rgb_gts(scene.id, cam_id_list[0], 0)
+        ground_truth = scene_dataloader.get_image_and_gts(scene.id, cam_id_list[0], 0)
 
 
     #---------------------------------------------
@@ -190,7 +192,7 @@ def main_function(args: ConfigDict):
     with torch.no_grad():
         # for scene in scene_bank:
         scene: Scene = scene_bank[0]
-        scene.frozen_at(frame_ind_list[0])
+        scene.slice_at(frame_ind_list[0])
         obj = scene.get_drawable_groups_by_class_name(scene.main_class_name)[0]
         model = obj.model
 
@@ -206,16 +208,16 @@ def main_function(args: ConfigDict):
             if isinstance(model.space, AABBSpace):
                 resolution = 128
                 num_step_per_occvoxel = 8
-                march_step_size = (model.space.diameter.item() / resolution / num_step_per_occvoxel) * obj.scale.ratio().max()
+                march_step_size = (model.space.radius3d.norm(dim=-1).item() / resolution / num_step_per_occvoxel) * obj.scale.vec_3().max()
                 ic(march_step_size)
-                accel = OccupancyGridAS(
+                accel = OccGridAccel(
                     model.space, 
                     resolution=128, occ_val_fn_cfg=ConfigDict(type='sdf', inv_s=256.0), occ_thre=0.8, 
                     init_cfg=ConfigDict(num_steps=128, num_pts=2**24, mode='from_net'))
                 # NOTE: `step_size` in world space.
                 model.accel = accel
                 # Run init from net
-                model.accel.preprocess_per_train_step(0, query_fn=lambda x: model.forward_sdf(x, ignore_update=True)['sdf'])
+                model.accel.init(model.query_sdf)
                 forward_inv_s = 6400.0
                 model.ray_query_cfg = ConfigDict(
                     forward_inv_s=6400., 
@@ -234,7 +236,7 @@ def main_function(args: ConfigDict):
         #     [Optional] Prepare gathering camera pointclouds     
         #---------------------------------------------
         if args.gather_cam_pcl:
-            from nr3d_lib.geometry import export_pcl_ply
+            from nr3d_lib.graphics.pointcloud import export_pcl_ply
             cam_pcl = []
             cam_pcl_color = []
 
@@ -285,7 +287,7 @@ def main_function(args: ConfigDict):
                     cam0: Camera = scene.observers[cam_ref_id]
                     
                     if args.lidar_model == 'original' or args.lidar_model == 'original_reren':
-                        lidar_gt = scene_dataloader.get_lidar_gts(scene.id, args.lidar_id, scene.i, device=device)
+                        lidar_gt = scene_dataloader.get_lidar_gts(scene.id, args.lidar_id, frame_ind, device=device)
                         lidar_rays_o_local, lidar_rays_d_local = lidar_gt['rays_o'], lidar_gt['rays_d']
                         if args.lidar_model == 'original':
                             lidar_ranges_gt = lidar_gt['ranges']
@@ -310,7 +312,7 @@ def main_function(args: ConfigDict):
                                 scene, rays=(lidar_rays_o,lidar_rays_d), near=lidar.near, far=lidar.far, 
                                 only_cr=True, with_normal=False, 
                                 with_rgb=(args.lidar_vis_rgb_choice == 'appearance'), 
-                                render_per_obj=(args.lidar_vis_rgb_choice == 'ins_seg'), 
+                                render_per_obj_individual=(args.lidar_vis_rgb_choice == 'ins_seg'), 
                                 rayschunk=args.rayschunk, show_progress=args.progress, 
                                 bypass_ray_query_cfg=ConfigDict({obj.class_name: {'forward_inv_s': lidar_forward_inv_s}}))  
                             lidar_rays_acc = ret_lidar['rendered']['mask_volume']
@@ -333,17 +335,17 @@ def main_function(args: ConfigDict):
                         # lidar.transform = cam0.world_transform
                         # lidar.world_transform = lidar.transform
                         # TODO: Here we should use `lidar`, not `camera_0`! 
-                        #   We need to make `preprocess_per_render_frame` more adaptable to accommodate lidar sensor parameters.
-                        scene.asset_bank.preprocess_per_render_frame(renderer=renderer, observer=cam0)
+                        #   We need to make `rendering_before_per_view` more adaptable to accommodate lidar sensor parameters.
+                        asset_bank.rendering_before_per_view(renderer=renderer, observer=cam0, scene_id=scene.id)
                         # Lidar rays in world
-                        lidar_rays_o, lidar_rays_d = lidar.get_all_rays()
+                        lidar_rays_o, lidar_rays_d, lidar_rays_ts = lidar.get_all_rays(return_ts=True)
                         
                         #-----------------------------------------------
                         ret_lidar = renderer.render(
-                            scene, rays=(lidar_rays_o,lidar_rays_d), near=lidar.near, far=lidar.far, 
+                            scene, rays=(lidar_rays_o,lidar_rays_d,lidar_rays_ts), near=lidar.near, far=lidar.far, 
                             only_cr=True, with_normal=False, 
                             with_rgb=(args.lidar_vis_rgb_choice == 'appearance'), 
-                            render_per_obj=(args.lidar_vis_rgb_choice == 'ins_seg'), 
+                            render_per_obj_individual=(args.lidar_vis_rgb_choice == 'ins_seg'), 
                             rayschunk=args.rayschunk, show_progress=args.progress, 
                             bypass_ray_query_cfg=ConfigDict({obj.class_name: {'forward_inv_s': lidar_forward_inv_s}}))  
                         lidar_rays_acc = ret_lidar['rendered']['mask_volume']
@@ -426,7 +428,7 @@ def main_function(args: ConfigDict):
             read_geometry = o3d.io.read_triangle_mesh(args.render_mesh)
             # From obj's coordinates to world coordinates
             if args.render_mesh_transform == 'to_world':
-                geometry = copy.deepcopy(read_geometry).transform(obj.world_transform.mat_4x4().data.cpu().numpy())
+                geometry = deepcopy(read_geometry).transform(obj.world_transform.mat_4x4().data.cpu().numpy())
             elif args.render_mesh_transform == 'identity':
                 geometry = read_geometry
             else:
@@ -465,21 +467,23 @@ def main_function(args: ConfigDict):
             assert args.nvs_node_id is not None, "`--nvs_node_id=` is required to manipulate the (ego node's) pose.\n"\
                 "For single objects, 'camera' is typically used. Please refer to the 'id' field of the camera in xxx_dataset.py.\n"\
                 "For street views, the typical value varies: 'camera_FRONT' for Waymo, ..."
-            scene.frozen_at(ref_frame_ind_list)
+            scene.slice_at(ref_frame_ind_list)
             # if args.nvs_should_recollect:
             #     assert args.nvs_node_id not in scene.all_nodes, f"The target nvs_node_id={args.nvs_node_id} is already in the scene graph, no need to re-collect"
             #     nvs_node = SceneNode(args.nvs_node_id, scene=scene, device=device, dtype=torch.float)
             #     scenebank_cfg = args.scenebank_cfg.deepcopy()
             #     scenebank_cfg.update(scenebank_cfg.pop('on_load', {}))
             #     # Only for waymo
-            #     scenebank_cfg.joint_camlidar = True
-            #     scenebank_cfg.joint_camlidar_equivalent_extr = True
+            #     scenebank_cfg.scene_graph_has_ego_car = True
+            #     scenebank_cfg.correct_extr_for_timestamp_difference = True
             #     data_scenario = get_dataset_scenario(dataset_impl, scene.id, args.scenebank_cfg)
             # else:
+            
             nvs_node = scene.all_nodes[args.nvs_node_id]
             pose_ref = nvs_node.world_transform.mat_4x4().data.cpu().numpy()
+            
             if args.nvs_path == 'spherical_spiral':
-                from nr3d_lib.plot.camera_paths import get_path_spherical_spiral
+                from nr3d_lib.graphics.cameras import get_path_spherical_spiral
                 view_ids = args.nvs_param.split(',')
                 assert len(view_ids) == 3, 'please select three view indices on a small circle, in CCW order (looking from above)'
                 view_ids = [int(v) for v in view_ids]
@@ -490,7 +494,7 @@ def main_function(args: ConfigDict):
                     verbose=args.nvs_verbose, intrs=nvs_node.intr.mat_3x3().data.cpu().numpy(), 
                     H=nvs_node.intr.H, W=nvs_node.intr.W, cam_size=0.05, font_size=12)
             elif args.nvs_path == "small_circle":
-                from nr3d_lib.plot.camera_paths import get_path_small_circle
+                from nr3d_lib.graphics.cameras import get_path_small_circle
                 view_ids = args.nvs_param.split(',')
                 assert len(view_ids) == 3, 'please select three view indices on a small circle, in CCW order (looking from above)'
                 view_ids = [int(v) for v in view_ids]
@@ -502,10 +506,10 @@ def main_function(args: ConfigDict):
                     H=nvs_node.intr.H, W=nvs_node.intr.W, cam_size=0.2, font_size=6
                 )
             elif args.nvs_path == "interpolation":
-                from nr3d_lib.plot.camera_paths import get_path_interpolation
+                from nr3d_lib.graphics.cameras import get_path_interpolation
                 render_pose_all = get_path_interpolation(pose_ref, num_frames)
             elif args.nvs_path == "street_view":
-                from nr3d_lib.plot.camera_paths import get_path_front_left_lift_then_spiral_forward
+                from nr3d_lib.graphics.cameras import get_path_front_left_lift_then_spiral_forward
                 kwargs = dict(pose_ref=pose_ref, num_frames=num_frames)
                 kwargs.update(forward_vec=dataset_impl.forward_vec, up_vec=dataset_impl.up_vec, left_vec=-1*dataset_impl.right_vec)
                 if args.nvs_param is not None:
@@ -518,14 +522,31 @@ def main_function(args: ConfigDict):
             else:
                 raise RuntimeError(f"Invalid nvs_path={args.nvs_path}")
             scene.unfrozen()
-            scene.frozen_at(args.start_frame) # Re-freeze at start reference frame 
+            scene.slice_at(args.start_frame) # Re-freeze at start reference frame 
 
         #---------------------------------------------
         #     Prepare results gathering
         #---------------------------------------------
-        collate_keys = ([] if args.no_gt else ['rgb_gt']) \
-            + ['rgb_volume', 'depth_volume', 'normals_volume'] \
-            + (['mesh'] if should_collect_mesh_imgs else [])
+        collate_keys = []
+        if not args.no_gt:
+            collate_keys.extend(['rgb_gt'])
+        collate_keys.extend(['rgb_volume', 'depth_volume'])
+        if with_normal:
+            collate_keys.extend(['normals_volume'])
+        if with_static_dynamic:
+            if not with_normal:
+                keys_static_dynamic = ['mask_static', 'rgb_static', 
+                                       'mask_dynamic', 'rgb_dynamic', ]
+            else:
+                keys_static_dynamic = ['mask_static', 'rgb_static', 'normals_static', 
+                                       'mask_dynamic', 'rgb_dynamic', 'normals_dynamic']
+            for k in keys_static_dynamic:
+                collate_keys.append(k)
+        if with_flow:
+            collate_keys.extend(['flow_fwd', 'flow_bwd'])
+        if should_collect_mesh_imgs:
+            collate_keys.extend(['mesh'])
+        
         all_gather = dict()
         for cam_id in cam_id_list:
             all_gather[cam_id] = dict({k: [] for k in collate_keys})
@@ -537,7 +558,7 @@ def main_function(args: ConfigDict):
         for frame_ind in tqdm(frame_ind_list, "rendering frames..."):
             if args.nvs_path is None:
                 # [replay]
-                scene.frozen_at(frame_ind)
+                scene.slice_at(frame_ind)
             else:
                 # [nvs]
                 render_pose = render_pose_all[frame_ind]
@@ -574,10 +595,11 @@ def main_function(args: ConfigDict):
                 
                 #-----------------------------------------------
                 ret = renderer.render(scene, observer=cam, show_progress=args.progress, with_env=not args.no_sky, 
-                                      render_per_obj=True, render_per_obj_in_total=True, only_cr=args.only_cr, 
+                                      render_per_obj_individual=True, render_per_obj_in_scene=True, only_cr=args.only_cr, 
                                       bypass_ray_query_cfg=ConfigDict({obj.class_name: {'forward_inv_s': forward_inv_s}}))
                 rendered = ret['rendered']
-                main_rendered_in_total = ret['rendered_per_obj_in_total'][obj.id]
+                main_rendered = ret['rendered_per_obj'][obj.id]
+                main_rendered_in_scene = ret['rendered_per_obj_in_scene'][obj.id]
                 #-----------------------------------------------
                 
                 if args.gather_cam_pcl:
@@ -590,46 +612,78 @@ def main_function(args: ConfigDict):
                     cam_pcl.append(pts)
                     cam_pcl_color.append(pts_color)
                 
-                def to_img(tensor):
+                def to_img(tensor) -> np.ndarray:
                     return tensor.reshape([cam.intr.H, cam.intr.W, -1]).data.cpu().numpy()
 
+                #-----------------------------------------------
+                # GT
+                if not args.no_gt:
+                    ground_truth = scene_dataloader.get_image_and_gts(scene.id, cam.id, frame_ind)
+                    rgb_gt = (to_img(ground_truth['image_rgb'])*255).clip(0, 255).astype(np.uint8)
+                    cur_frame_dict['rgb_gt'] = rgb_gt
+
+                #-----------------------------------------------
+                # RGB
                 if 'rgb_volume' in rendered.keys():
                     rgb_volume = (to_img(rendered['rgb_volume']) * 255).clip(0, 255).astype(np.uint8)
                 else:
                     rgb_volume = np.zeros([cam.intr.H, cam.intr.W, 3], dtype=np.uint8)
+                cur_frame_dict['rgb_volume'] = rgb_volume
                 
-                if not args.no_gt:
-                    ground_truth = scene_dataloader.get_rgb_gts(scene.id, cam.id, frame_ind)
-                    rgb_gt = (to_img(ground_truth['rgb'])*255).clip(0, 255).astype(np.uint8)
-                    cur_frame_dict['rgb_gt'] = rgb_gt
-                
+                #-----------------------------------------------
+                # Mask and depth
                 if not args.with_distant_depth:
                     # Since distant depth is usally messy and in-accurate
-                    mask_volume = to_img(main_rendered_in_total['mask_volume'])
-                    depth_volume = to_img(main_rendered_in_total['depth_volume'])
+                    mask_volume = to_img(main_rendered_in_scene['mask_volume'])
+                    depth_volume = to_img(main_rendered_in_scene['depth_volume'])
                 else:
                     mask_volume = to_img(rendered['mask_volume'])
                     depth_volume = to_img(rendered['depth_volume'])
                 depth_volume = mask_volume * np.clip(depth_volume/depth_max, 0, 1) + (1-mask_volume) * 1
                 depth_volume = color_depth(depth_volume.squeeze(-1), scale=1, cmap='turbo')    # turbo_r, viridis, rainbow
-                
-                cur_frame_dict['rgb_volume'] = rgb_volume
                 cur_frame_dict['depth_volume'] = depth_volume
                 
+                #-----------------------------------------------
                 # Normals
-                if 'normals_volume' in rendered:
-                    if not args.with_distant_normal:
-                        normals_volume = to_img(main_rendered_in_total['normals_volume'])
-                    else:
-                        normals_volume = to_img(rendered['normals_volume'])
-                    normals_volume = ((normals_volume/2+0.5)*255).clip(0,255).astype(np.uint8)
-                    cur_frame_dict['normals_volume'] = normals_volume
+                if with_normal:
+                    if 'normals_volume' in cur_frame_dict:
+                        assert 'normals_volume' in rendered
+                        if not args.with_distant_normal:
+                            normals_volume = to_img(main_rendered_in_scene['normals_volume'])
+                        else:
+                            normals_volume = to_img(rendered['normals_volume'])
+                        normals_volume = ((normals_volume/2+0.5)*255).clip(0,255).astype(np.uint8)
+                        cur_frame_dict['normals_volume'] = normals_volume
+
+                #-----------------------------------------------
+                # Static & Dynamic
+                if with_static_dynamic:
+                    for k in ['mask_static', 'mask_dynamic']:
+                        assert k in main_rendered
+                        cur_frame_dict[k] = (to_img(main_rendered[k].view(-1,1).expand(-1,3)) * 255).clip(0,255).astype(np.uint8)
+                    for k in ['rgb_static', 'rgb_dynamic']:
+                        assert k in main_rendered
+                        cur_frame_dict[k] = (to_img(main_rendered[k]) * 255).clip(0,255).astype(np.uint8)
+                    if with_normal:
+                        for k in ['normals_static', 'normals_dynamic']:
+                            assert k in main_rendered
+                            cur_frame_dict[k] = (to_img(main_rendered[k]/2+0.5) * 255).clip(0,255).astype(np.uint8)
+
+                #-----------------------------------------------
+                # Flow
+                if with_flow:
+                    for k in ['flow_fwd', 'flow_fwd_pred_bwd', 'flow_bwd', 'flow_bwd_pred_fwd']:
+                        if k in cur_frame_dict: 
+                            assert k in main_rendered # main_rendered_in_scene
+                            _im_flow = to_img(scene_flow_to_rgb(main_rendered[k], flow_max_radius=0.5))
+                            _im_flow = (_im_flow * 255).clip(0, 255).astype(np.uint8)
+                            cur_frame_dict[k] = _im_flow
 
                 #---- NOTE: Ablation study on w/ and w/o distant-view model (run different exps)
                 # debug_name = f'crdv_143481_withdistant_{frame_ind}'
                 # os.makedirs(f"./dev_test/paper/{debug_name}", exist_ok=True)
-                # rgb_street_in_total = to_img(ret['rendered_per_obj_in_total']['street']['rgb_volume'])
-                # alpha_street_in_total = to_img(ret['rendered_per_obj_in_total']['street']['mask_volume'])
+                # rgb_street_in_total = to_img(ret['rendered_per_obj_in_scene']['street']['rgb_volume'])
+                # alpha_street_in_total = to_img(ret['rendered_per_obj_in_scene']['street']['mask_volume'])
                 # rgba_street_in_total = np.concatenate([rgb_street_in_total, alpha_street_in_total], -1)
                 # imageio.imwrite(f'./dev_test/paper/{debug_name}/rgba_street_in_total.png', rgba_street_in_total)
                 
@@ -641,8 +695,8 @@ def main_function(args: ConfigDict):
                 # imageio.imwrite(f'./dev_test/paper/{debug_name}/depth.png', depth_volume)
                 # imageio.imwrite(f'./dev_test/paper/{debug_name}/normal.png', normals_volume)
                 
-                # rgb_distant_in_total = to_img(ret['rendered_per_obj_in_total']['distant']['rgb_volume'])
-                # alpha_distant_in_total = to_img(ret['rendered_per_obj_in_total']['distant']['mask_volume'])
+                # rgb_distant_in_total = to_img(ret['rendered_per_obj_in_scene']['distant']['rgb_volume'])
+                # alpha_distant_in_total = to_img(ret['rendered_per_obj_in_scene']['distant']['mask_volume'])
                 # rgba_distant_in_total = np.concatenate([rgb_distant_in_total, alpha_distant_in_total], -1)
                 # imageio.imwrite(f'./dev_test/paper/{debug_name}/rgba_distant_in_total.png', rgba_distant_in_total)
                 
@@ -660,10 +714,10 @@ def main_function(args: ConfigDict):
                         cond_mkdir(obs_dir)
                         k_dir = os.path.join(obs_dir, k)
                         cond_mkdir(k_dir)
-                        imageio.imwrite(os.path.join(k_dir, f"{frame_ind:08d}.png"), v)
+                        imageio.imwrite(os.path.join(k_dir, f"{frame_ind:08d}.jpg"), v)
         
         if not args.no_cam and args.gather_cam_pcl:
-            pcl_filepath = os.path.join(vid_root, f"{scene.id}_pointcloud.ply")
+            pcl_filepath = os.path.join(vid_root, f"{name}_cam_pcl_ds={args.downscale}.ply")
             cam_pcl = torch.cat(cam_pcl, 0).view(-1,3).data.cpu().numpy()
             cam_pcl_color = (torch.cat(cam_pcl_color, 0).view(-1,3).data*255.).clamp_(0., 255.).to(dtype=torch.uint8).cpu().numpy()
             export_pcl_ply(cam_pcl, cam_pcl_color, filepath=pcl_filepath)
@@ -680,7 +734,8 @@ def main_function(args: ConfigDict):
 
     #--------- 1 row collection
     if not args.no_cam:
-        keys_1l = ([] if args.no_gt else ['rgb_gt']) + ['rgb_volume', 'depth_volume', 'normals_volume'] + (['mesh'] if should_collect_mesh_imgs else [])
+        # keys_1l = ([] if args.no_gt else ['rgb_gt']) + ['rgb_volume', 'depth_volume', 'normals_volume'] + (['mesh'] if should_collect_mesh_imgs else [])
+        keys_1l = collate_keys
         frames_per_obs_1l_all = []
         for cam_id, obs_dict in all_gather.items():
             frames_per_obs_1l = []
@@ -703,22 +758,17 @@ def main_function(args: ConfigDict):
             frames_per_obs_1l_all = np.concatenate(frames_per_obs_1l_all, axis=1)
             write_video(os.path.join(vid_root, f"{name}_1l_all.mp4"), frames_per_obs_1l_all)
 
-        #--------- 3 cam concat
-        cam_id_list = ['camera_FRONT_LEFT', 'camera_FRONT', 'camera_FRONT_RIGHT'] # For waymo's three frontal cameras
-        if set(all_gather.keys()) == set(cam_id_list):
-            keys_1c = ([] if args.no_gt else ['rgb_gt']) + ['rgb_volume', 'normals_volume', 'depth_volume'] + (['mesh'] if should_collect_mesh_imgs else [])
-            frame_per_obs_1c_all = []
-            for cam_id in cam_id_list:
-                obs_dict = all_gather[cam_id]
-                frames_per_obs_1c = []
-                new_obs_dict = dict()
-                for k in keys_1c:
-                    new_obs_dict[k] = obs_dict[k]
-                for kvs in zip(*(new_obs_dict.values())):
-                    frames_per_obs_1c.append(np.concatenate(kvs, axis=0))
-                frame_per_obs_1c_all.append(np.array(frames_per_obs_1c))
-            frame_per_obs_1c_all = np.concatenate(frame_per_obs_1c_all, axis=2)
-            write_video(os.path.join(vid_root, f"{name}_1c_all.mp4"), frame_per_obs_1c_all)
+        #--------- All cams horizontal concat (from left to right, in the order specified by `cam_id_list`)
+        # keys_1c = ([] if args.no_gt else ['rgb_gt']) + ['rgb_volume', 'normals_volume', 'depth_volume'] + (['mesh'] if should_collect_mesh_imgs else [])
+        keys_1c = collate_keys
+        all_keys = []
+        for k in keys_1c:
+            all_frames_per_cam_this_k = [np.array(all_gather[cam_id][k]) for cam_id in cam_id_list]
+            all_frames_per_cam_this_k = pad_images_to_same_size(all_frames_per_cam_this_k, batched=True, padding='top_left') 
+            all_frames_this_k = np.concatenate(all_frames_per_cam_this_k, axis=2)
+            all_keys.append(all_frames_this_k)
+        all_keys = np.concatenate(all_keys, axis=1)
+        write_video(os.path.join(vid_root, f"{name}_1c_all.mp4"), all_keys)
 
 def make_parser():
     bc = BaseConfig()

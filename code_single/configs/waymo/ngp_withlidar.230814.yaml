@@ -91,10 +91,9 @@ scenebank_cfg:
       list: ${lidar_list}
   on_load:
     no_objects: true # Set to true to skip loading foreground objects into scene graph
-    joint_camlidar: true
     align_orientation: false
     consider_distortion: true
-    joint_camlidar_equivalent_extr: true
+    scene_graph_has_ego_car: true
 
 assetbank_cfg:
   Street:
@@ -111,7 +110,7 @@ assetbank_cfg:
           n_feats: 2
           log2_hashmap_size: 20
         param_init_cfg:
-          method: uniform_to_type
+          type: uniform_to_type
           bound: 1.0e-4
         anneal_cfg:
           type: hardmask
@@ -119,11 +118,14 @@ assetbank_cfg:
           stop_it: 1000
       extra_pos_embed_cfg:
         type: identity
-      sigma_decoder_cfg:
+      density_decoder_cfg:
         type: mlp
         D: 1
         W: 64
-      n_rgb_used_output: 31
+        output_activation:
+          type: trunc_exp
+          offset: -1 # trunc_exp(x-1)
+      n_extra_feat_from_output: 31
       radiance_decoder_cfg:
         use_pos: false
         use_view_dirs: true
@@ -142,10 +144,10 @@ assetbank_cfg:
         init_cfg:
           mode: constant
           constant_value: ${occ_init}
-        acquire_from_net_cfg:
+        update_from_net_cfg:
           num_steps: 4
           num_pts: ${eval:"2**20"}
-        acquire_from_samples_cfg: {}
+        update_from_samples_cfg: {}
         n_steps_between_update: 16
         n_steps_warmup: 256
       ray_query_cfg:
@@ -158,6 +160,11 @@ assetbank_cfg:
       populate_cfg:
         use_cuboid: false # NOTE: Vanilla NGP use Cubic representation instead of Cuboid
         extend_size: ${extend_size}
+      training_cfg:
+        lr: 1.0e-2
+        eps: 1.0e-15
+        betas: [0.9, 0.99]
+        scheduler: ${training.scheduler}
   Sky:
     model_class: app.models.env.SimpleSky
     model_params: 
@@ -168,6 +175,10 @@ assetbank_cfg:
       D: 2
       W: 256
       use_tcnn_backend: false
+    asset_params:
+      training_cfg:
+        lr: 1.0e-3
+        scheduler: ${training.scheduler}
   # #--- Pose refine related
   # LearnableParams:
   #   model_class: app.models.scene.LearnableParams
@@ -203,9 +214,9 @@ training:
       camera:
         downscale: 1
         list: ${camera_list}
-      rgb_mask: {}
-      rgb_human_mask: {}
-      rgb_ignore_mask:
+      image_occupancy_mask: {}
+      image_human_mask: {}
+      image_ignore_mask:
         ignore_not_occupied: false
         ignore_dynamic: false
         ignore_human: true
@@ -222,15 +233,11 @@ training:
       num_rays: ${num_rays_pixel}
       frame_sample_mode: uniform
       pixel_sample_mode: error_map
-      error_map_res: [32,32]
-      uniform_sampling_fraction: 0.5
       #---------- Joint frame-pixel dataloader
       # joint: true
       # equal_mode: point_batch
       # num_rays: ${num_rays_pixel}
       # num_points: ${eval:"2**18"} # 256 Ki
-      # error_map_res: [32,32]
-      # uniform_sampling_fraction: 0.5
     lidar_dataset:
       equal_mode: ray_batch
       num_rays: ${num_rays_lidar}
@@ -243,9 +250,9 @@ training:
       camera:
         downscale: 2
         list: ${camera_list}
-      rgb_mask: {}
-      rgb_human_mask: {}
-      rgb_ignore_mask:
+      image_occupancy_mask: {}
+      image_human_mask: {}
+      image_ignore_mask:
         ignore_not_occupied: false
         ignore_dynamic: false
         ignore_human: true
@@ -254,16 +261,21 @@ training:
       camera_sample_mode: all_list
       frame_sample_mode: uniform
 
+  error_map:
+    error_map_hw: [32,64]
+    frac_uniform: 0.5
+    frac_mask_err: 0
+    n_steps_max: 2500 # NOTE: The actual effective time of this number now needs to be multiplied by the number of cameras! (Because each iteration samples a camera uniformly at random)
+
   #---------- Training losses
-  # uniform_sample: ${eval:"2**16"} # 64 Ki -> 1.6x slower training
-  uniform_sample: ${eval:"2**16"} # 64 Ki
+  uniform_sample: 
+    Street: ${eval:"2**16"} # 64 Ki
   losses:
     rgb: 
       fn_type: mse
       respect_ignore_mask: true
     occupancy_mask:
       w: ${w_mask}
-      w_on_errmap: 0
       safe_bce: true
       pred_clip: 0
     lidar:
@@ -288,28 +300,15 @@ training:
           norm_type: 2.0
           w: 1.0e-6
 
-  optim:
-    default: 1.0e-3
-    Sky: 1.0e-3
-    Street: 
-      lr: 1.0e-2
-      eps: 1.0e-15
-      betas: [0.9, 0.99]
-    # #--- Pose refine related
-    # LearnableParams: 
-    #   ego_motion:
-    #     lr: 0.001
-    #     alpha_lr_rotation: 0.05
-
   num_iters: ${num_iters}
   scheduler:
     #---------- exponential
-    type: exponential_step
+    type: exponential
     num_iters: ${training.num_iters}
     min_factor: ${min_factor}
     warmup_steps: ${warmup_steps}
     #---------- cosine
-    # type: warmupcosine
+    # type: warmup_cosine
     # num_iters: ${training.num_iters}
     # min_factor: ${min_factor}
     # warmup_steps: ${warmup_steps}

@@ -109,7 +109,7 @@ def stat_dynamic_objects(dataset, speed_eps=0.2, loc_eps=0.03):
                 by_loc.append(str_id)
         stats[cls_name]['by_loc'] = by_loc
     #------------------------------------------------
-    # Gather results from box_speed and loc_motion
+    # Collect results from box_speed and loc_motion
     for cls_name, cls_dict in stats.items():
         li_dyna = list(set(cls_dict['by_speed']) | set(cls_dict['by_loc']))
         stats[cls_name]['is_dynamic'] = li_dyna

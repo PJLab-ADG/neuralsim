@@ -1,0 +1,421 @@
+#------------------------------------------------------------
+#------------    Some shortcut configs
+#------------------------------------------------------------
+
+device_ids: -1
+
+num_rays_lidar: 8192
+
+near: 0.1
+far: 200.0
+depth_max: 120.0 # To visualize / colorize depth when render/eval
+extend_size: 80.0
+num_coarse: 256
+upsample_inv_s: 64.0
+num_fine: [8,8,8]
+step_size: 0.05
+radius_scale_min: 1 # Nearest sampling shell of NeRF++ background (Distant-view model)
+radius_scale_max: 1000 # Furthest sampling shell of NeRF++ background (Distant-view model)
+
+sdf_scale: 25.0
+
+lidar_fn: l1
+lidar_fn_param: {}
+w_lidar: 0.01
+
+num_uniform: ${eval:"2**16"}
+
+w_eikonal: 0.01
+on_render_ratio: 1.0
+on_occ_ratio: 1.0
+on_render_type: both
+
+w_sparsity: 0.006
+sparsity_enable_after: 0
+sparsity_anneal_for: 750
+
+clbeta: 10.0
+clw: 0.2
+clearance_sdf: 0.02 # 0.02 * (sdf_scale=25) = 0.5m
+
+num_iters: 7500
+warmup_steps: 1500
+min_factor: 0.03
+fglr: 1.0e-2
+bglr: 1.0e-2
+
+# start_it: 0
+# start_level: 1
+# stop_it: 1500
+
+#------------------------------------------------------------
+#------------    Full configs
+#------------------------------------------------------------
+# exp_dir: logs/streetsurf_refactor/seg405841_exp1_filterobj_dynamic_ext${extend_size}_cls=${clearance_sdf}_ego2.0
+exp_dir: logs/streetsurf/seg100613.lidaronly_exp1_filterobj_dynamic
+
+camera_list: [camera_SIDE_LEFT, camera_FRONT_LEFT, camera_FRONT, camera_FRONT_RIGHT, camera_SIDE_RIGHT] # Just for validation
+lidar_list: [lidar_TOP, lidar_FRONT, lidar_REAR, lidar_SIDE_LEFT, lidar_SIDE_RIGHT]
+lidar_weight: [0.4, 0.1, 0.1, 0.1, 0.1] # Will be normalized when using
+
+dataset_cfg:
+  target: dataio.autonomous_driving.WaymoDataset
+  param:
+    # root: /nvme/guojianfei/waymo/processed/
+    root: /data1/waymo/processed/
+    # root: /home/ventus/datasets/waymo/processed/
+    rgb_dirname: images
+    lidar_dirname: lidars
+    # mask_dirname: masks
+    # image_mono_depth_dirname: depths
+    # image_mono_normals_dirname: normals
+
+scenebank_cfg:
+  # NOTE: scene_id[,start_frame[,n_frames]]
+  # scenarios: ???
+
+  scenarios:
+    - segment-10061305430875486848_1080_000_1100_000_with_camera_labels
+    # - segment-4058410353286511411_3980_000_4000_000_with_camera_labels
+    # - segment-7670103006580549715_360_000_380_000_with_camera_labels
+
+  observer_cfgs: 
+    Camera:
+      list: ${camera_list}
+    RaysLidar:
+      list: ${lidar_list}
+  on_load:
+    no_objects: true # Set to true to skip loading foreground objects into scene graph
+    align_orientation: true
+    consider_distortion: true
+    scene_graph_has_ego_car: true # !!! Convinient for NVS
+
+# test_scenebank_cfg: # scenebank config for testing.
+#   scenarios:
+#     - segment-16646360389507147817_3320_000_3340_000_with_camera_labels
+#   observer_cfgs: 
+#     Camera:
+#       list: [camera_FRONT, camera_FRONT_LEFT, camera_FRONT_RIGHT, camera_SIDE_LEFT, camera_SIDE_RIGHT]
+#     RaysLidar:
+#       list: [lidar_TOP]
+#   on_load:
+#     no_objects: true # Set to true to skip loading foreground objects into scene graph
+#     consider_distortion: true
+#     scene_graph_has_ego_car: true
+
+assetbank_cfg:
+  Street:
+    model_class: app.models.single.LoTDNeuSStreet
+    model_params:
+      dtype: half
+      var_ctrl_cfg:
+        ln_inv_s_init: 0.3
+        ln_inv_s_factor: 10.0
+      cos_anneal_cfg: null
+      surface_cfg:
+        sdf_scale: ${sdf_scale}
+        encoding_cfg:
+          lotd_use_cuboid: true
+          lotd_auto_compute_cfg:
+            type: ngp
+            max_num_levels: 12
+            target_num_params: ${eval:"32*(2**20)"} # 64 MiB float16 params -> 32 Mi params
+            min_res: 16
+            n_feats: 2
+            log2_hashmap_size: 20
+          param_init_cfg:
+            type: uniform_to_type
+            bound: 1.0e-4
+          # anneal_cfg:
+          #   type: hardmask
+          #   start_it: ${start_it}
+          #   start_level: ${start_level} # (need to be small: so the training is stable; not too small, so there's still valid initialize pretraining.)
+          #   stop_it: ${stop_it} # Not for too much iters; should end very soon to not hinder quality
+        decoder_cfg: 
+          type: mlp
+          D: 1
+          W: 64
+          activation:
+            type: softplus
+            beta: 100.0
+        n_extra_feat_from_output: 0
+        geo_init_method: pretrain_after_zero_out
+        # geo_init_method: pretrain
+      radiance_cfg: null # !!! No appearance network
+      use_tcnn_backend: false
+      accel_cfg:
+        type: occ_grid
+        vox_size: 1.0
+        # resolution: [64,64,64]
+        occ_val_fn_cfg:
+          type: sdf
+          inv_s: 256.0 # => +- 0.01 sdf @ 0.3 thre
+        occ_thre: 0.3
+        ema_decay: 0.95
+        init_cfg:
+          mode: from_net
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_net_cfg:
+          num_steps: 4
+          num_pts: ${eval:"2**20"}
+        update_from_samples_cfg: {}
+        n_steps_between_update: 16
+        n_steps_warmup: 256
+      ray_query_cfg:
+        query_mode: march_occ_multi_upsample_compressed
+        # query_mode: raymarch+batchup+jianfei
+        query_param:
+          nablas_has_grad: true
+          num_coarse: ${num_coarse}
+          num_fine: ${num_fine}
+          coarse_step_cfg:
+            step_mode: linear
+          march_cfg:
+            step_size: ${step_size} # Typical value: (far-near) / 4000
+            max_steps: 4096
+          upsample_inv_s: ${upsample_inv_s}
+          upsample_inv_s_factors: [1, 4, 16]
+    asset_params:
+      initialize_cfg: 
+        target_shape: road_surface
+        obs_ref: lidar_TOP # Reference observer. Its trajectory will be used for initialization.
+        lr: 1.0e-3
+        num_iters: 1000
+        num_points: 262144
+        w_eikonal: 3.0e-3
+        floor_dim: z
+        floor_up_sign: 1
+        ego_height: 2.0
+      preload_cfg: {}
+      populate_cfg:
+        extend_size: ${extend_size}
+  Distant:
+    model_class: app.models.single.LoTDNeRFDistant
+    model_params:
+      dtype: half
+      encoding_cfg:
+        input_ch: 4
+        lotd_use_cuboid: true
+        lotd_auto_compute_cfg:
+          type: ngp4d
+          target_num_params: ${eval:"16*(2**20)"} # 16 Mi params
+          min_res_xyz: 16
+          min_res_w: 4
+          n_feats: 2
+          log2_hashmap_size: 20
+          per_level_scale: 1.382
+        param_init_cfg:
+          type: uniform_to_type
+          bound: 1.0e-4
+      sigma_decoder_cfg: 
+        type: mlp
+        D: 1
+        W: 64
+        output_activation: softplus
+      radiance_decoder_cfg:
+        use_pos: false
+        use_view_dirs: false # !!!
+        use_nablas: false
+        D: 2
+        W: 64
+      n_extra_feat_from_output: 0
+      use_tcnn_backend: false
+      radius_scale_min: ${radius_scale_min}
+      radius_scale_max: ${radius_scale_max}
+      ray_query_cfg:
+        query_mode: march
+        query_param:
+          march_cfg:
+            sample_mode: box
+            max_steps: 64
+    asset_params:
+      populate_cfg:
+        cr_obj_classname: Street
+  # #--- Pose refine related
+  # LearnableParams:
+  #   model_class: app.models.scene.LearnableParams
+  #   model_params:
+  #     refine_ego_motion: true
+  #     # ego_node_id: ego_car
+  #     ego_class_name: Camera
+  #     refine_camera_intr: false
+  #     refine_camera_extr: false
+  #     enable_after: 500
+
+renderer:
+  common:
+    with_env: true
+    with_rgb: false # !!! no rgb rendering.
+    with_normal: true
+    near: ${near} # NOTE: Critical to scene scale!
+    far: ${far}
+  train:
+    depth_use_normalized_vw: false # For meaningful depth supervision (if any)
+    perturb: true
+  val:
+    depth_use_normalized_vw: true # For correct depth rendering
+    perturb: false
+    rayschunk: 4096
+
+training:
+  #---------- Dataset and sampling
+  dataloader:
+    preload: true
+    preload_on_gpu: false
+    tags:
+      # camera:
+      #   load_images: false
+      #   downscale: 1
+      #   list: ${camera_list}
+      # image_occupancy_mask: {}
+      # image_human_mask: {}
+      # image_ignore_mask:
+      #   ignore_not_occupied: false
+      #   ignore_dynamic: false
+      #   ignore_human: true
+      lidar:
+        list: ${lidar_list}
+        multi_lidar_merge: true
+        filter_when_preload: true
+        filter_kwargs:
+          filter_in_cams: false # !!! no filter in cam !
+          filter_out_objs: true # !!! filter out objects !
+          filter_out_obj_dynamic_only: true # !!! filter out only dynamic !
+          filter_out_obj_classnames: [Vehicle, Pedestrian, Cyclist]
+    lidar_dataset:
+      equal_mode: ray_batch
+      num_rays: ${num_rays_lidar}
+      frame_sample_mode: uniform
+      lidar_sample_mode: merged_weighted
+      multi_lidar_weight: ${lidar_weight} # Will be normalized when used
+  val_dataloader:
+    preload: false
+    tags:
+      camera:
+        downscale: 4
+        list: ${camera_list}
+      lidar: ${training.dataloader.tags.lidar}
+      # image_occupancy_mask: {}
+      # image_human_mask: {}
+      # image_ignore_mask:
+      #   ignore_not_occupied: false
+      #   ignore_dynamic: false
+      #   ignore_human: true
+    image_dataset:
+      camera_sample_mode: all_list
+      frame_sample_mode: uniform
+
+  #---------- Training losses
+  #   uniform_sample: 
+    Street: ${eval:"2**16"} # 64 Ki -> 1.6x slower training
+    uniform_sample: 
+    Street: ${eval:"2**16"} # 64 Ki
+  losses:
+    lidar:
+      discard_outliers: 0
+      discard_outliers_median: 100.0
+      discard_toofar: 80.0
+      depth: 
+        w: ${w_lidar} # 0.05
+        fn_type: ${lidar_fn}
+        fn_param: ${lidar_fn_param}
+      # line_of_sight:
+      #   w: ${w_los}
+      #   fn_type: neus_unisim
+      #   fn_param:
+      #     # epsilon: ${eps_los}
+      #     epsilon_anneal:
+      #       type: milestones
+      #       milestones: [5000, 10000]
+      #       vals: [2.0, 1.0, 0.5]
+    # occupancy_mask:
+    #   w: 0.25
+    #   safe_bce: true
+    #   pred_clip: 0
+    #   special_mask_mode: only_cull_non_occupied
+    eikonal:
+      safe_mse: true
+      safe_mse_err_limit: 5.0
+      alpha_reg_zero: 0
+      on_occ_ratio: ${on_occ_ratio}
+      on_render_type: ${on_render_type}
+      on_render_ratio: ${on_render_ratio}
+      class_name_cfgs:
+        Street:
+          w: ${w_eikonal}
+    sparsity:
+      class_name_cfgs:
+        Street:
+          key: sdf
+          type: normalized_logistic_density
+          inv_scale: 16.0
+          w: ${w_sparsity}
+          anneal:
+            type: linear
+            start_it: ${sparsity_enable_after}
+            start_val: 0
+            stop_it: ${eval:"${sparsity_anneal_for}+${sparsity_enable_after}"}
+            stop_val: ${w_sparsity}
+            update_every: 100
+    clearance:
+      class_name_cfgs:
+        Street:
+          w: ${clw}
+          beta: ${clbeta}
+          thresh: ${clearance_sdf}
+    weight_reg:
+      class_name_cfgs:
+        Street:
+          norm_type: 2.0
+          w: 1.0e-6
+        Distant:
+          norm_type: 2.0
+          w: 1.0e-6
+
+  optim:
+    default: 1.0e-2
+    # Sky: 1.0e-3
+    Distant:
+      lr: ${bglr}
+      eps: 1.0e-15
+      betas: [0.9, 0.99]
+    Street: 
+      lr: ${fglr}
+      eps: 1.0e-15
+      betas: [0.9, 0.991]
+      invs_betas: [0.9, 0.999]
+    # #--- Pose refine related
+    # LearnableParams: 
+    #   ego_motion:
+    #     lr: 0.001
+    #     alpha_lr_rotation: 0.05
+
+  num_iters: ${num_iters}
+  scheduler:
+    #---------- exponential
+    type: exponential
+    num_iters: ${training.num_iters}
+    min_factor: ${min_factor}
+    warmup_steps: ${warmup_steps}
+    #---------- cosine
+    # type: warmup_cosine
+    # num_iters: ${training.num_iters}
+    # min_factor: ${min_factor}
+    # warmup_steps: 0
+    #---------- milestone
+    # type: multistep
+    # milestones: [20000, 30000]
+    # gamma: 0.33
+  
+  #---------- Logging and validation
+  i_val: 1500      # unit: iters
+  i_backup: -1 # unit: iters
+  i_save: -1     # unit: seconds
+  i_log: 20
+  log_grad: false
+  log_param: false
+
+  ckpt_file: null
+  ckpt_ignore_keys: []
+  ckpt_only_use_keys: null

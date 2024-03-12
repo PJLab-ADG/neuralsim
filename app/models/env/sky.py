@@ -12,7 +12,7 @@ from app.resources import Scene, SceneNode
 from nr3d_lib.models.blocks import get_blocks
 from nr3d_lib.models.embedders import get_embedder
 
-from app.models.base import AssetAssignment, AssetModelMixin
+from app.models.asset_base import AssetAssignment, AssetModelMixin
 
 class SimpleSky(AssetModelMixin, nn.Module):
     """
@@ -26,15 +26,15 @@ class SimpleSky(AssetModelMixin, nn.Module):
         dir_embed_cfg:dict={'type':'spherical', 'degree': 4}, 
         D=3, W=64, skips=[], activation='relu', output_activation='sigmoid', 
         n_appear_embedding: int = 0, appear_embed_cfg:dict={'type':'identity'}, 
-        weight_norm=False, dtype=torch.float, device=torch.device('cuda'), use_tcnn_backend=False):
+        weight_norm=False, dtype=torch.float, device=None, use_tcnn_backend=False):
         super().__init__()
 
         dir_embed_cfg.setdefault('use_tcnn_backend', use_tcnn_backend)
         self.embed_fn_view, input_ch_views = get_embedder(dir_embed_cfg, 3)
         
-        self.use_appear_embedding = n_appear_embedding > 0
-        # h_appear_embed
-        if self.use_appear_embedding:
+        self.use_h_appear = n_appear_embedding > 0
+        # h_appear
+        if self.use_h_appear:
             self.embed_fn_appear, input_ch_h_appear = get_embedder(appear_embed_cfg, n_appear_embedding)
         else:
             input_ch_h_appear = 0
@@ -44,14 +44,14 @@ class SimpleSky(AssetModelMixin, nn.Module):
             D=D,  W=W, skips=skips, activation=activation, output_activation=output_activation, 
             dtype=dtype, device=device, weight_norm=weight_norm, use_tcnn_backend=use_tcnn_backend)
 
-    def forward(self, v: torch.Tensor, *, h_appear_embed: torch.Tensor = None):
+    def forward(self, v: torch.Tensor, *, h_appear: torch.Tensor = None):
         network_input = self.embed_fn_view(v)
-        if self.use_appear_embedding > 0:
-            network_input = torch.cat([network_input, h_appear_embed], dim=-1)
+        if self.use_h_appear > 0:
+            network_input = torch.cat([network_input, h_appear], dim=-1)
         return self.blocks(network_input)
 
     @classmethod
-    def compute_model_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
+    def asset_compute_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
         return f"{cls.__name__}#{class_name or obj.class_name}#{scene.id}#{obj.id}"
 
 class PureColorSky(AssetModelMixin, nn.Module):
@@ -69,5 +69,5 @@ class PureColorSky(AssetModelMixin, nn.Module):
         return self.RGB.tile([*prefix,1])
 
     @classmethod
-    def compute_model_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
+    def asset_compute_id(cls, scene: Scene = None, obj: SceneNode = None, class_name: str = None) -> str:
         return f"{cls.__name__}#{class_name or obj.class_name}#{scene.id}#{obj.id}"

@@ -1,4 +1,4 @@
-# neuralsim
+# <img src="media/logo_blue.png" width=100> neuralsim
 
 3D surface reconstruction and simulation based on 3D neural rendering.
 
@@ -48,7 +48,20 @@ Single-object / multi-object / indoor / outdoor / large-scale surface reconstruc
 
 ## Updates
 
-
+- **2024-02-12 [v0.6.0]**
+  - Major overhaul on temporal logics & support timestamps interpolation mode
+  - Support using EmerNeRF for non-annotated objects.
+- **2023-09-23 [v0.5.2]**  
+  - Support generative/shared permutohedral lattice for batched/dynamic/batched-dynamic objects. 
+    :fire: Significantly reduces the memory and time usage for training a multi-object scene: <u>one street with dozens of vehicles and dozens of pedestrians can be trained in 3 hours on a single RTX3090!</u>
+- **2023-08-22 [v0.5.1]** Finish StreetSurf open-source
+- **2022-11-17 [v0.4.2]** Total refactor to packed-info based volume buffers, for both single object training (named StreetSurf later) and multi-object training.
+- **2022-08-08 [v0.3.0]** Total refactor to scene-graph management with frustum culling, major overhaul on speed performance
+- **2022-07-04 [v0.2.0]**
+  - Major overhaul on street-view training (data loading, LoTD repr., sky/mask, sparsity & regularizations.)
+  - Major overhaul on multi-object rendering (batched query & BufferComposeRenderer)
+- **2022-02-08 [v0.1.0]** Support single-object training (NeuS/NeRF) and multi-object training (fg=DIT-NeuS/Template-NeRF, bg=NeRF/NeuS/ACORN-NeuS)
+- **2021-10-18** first commit
 
 
 ## Highlights

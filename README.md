@@ -123,7 +123,7 @@ We also support efficient neural surface reconstruction for pedestrians, cyclist
   - See in [[scene.py]](app/resources/scenes.py): We have implemented two ways for freezing a scene graph at a specific time (or multiple batched time). You can either use the frame-indexing mode, in which the scene graph is frozen at one or multiple frame indices, or you can use the timestamp-interpolation mode, in which the scene graph is frozen at one or multiple timestamps. Both modes support feeding per-ray timestamps to the network.
 
 
-| Multi-frame occ. grids<br />accumulated in training | Multi-instance occ. grids<br />accumulated in training |
+| Multi-instance occ. grids<br />accumulated in training | Multi-timestamp occ. grids<br />accumulated in training |
 | --------------------------------------------------- | ------------------------------------------------------ |
 | ![occ_grid_batched](media/occ_grid_batched.jpg)     | ![occ_grid_dynamic](media/occ_grid_dynamic.jpg)        |
 

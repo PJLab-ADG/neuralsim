@@ -53,10 +53,11 @@ Single-object / multi-object / indoor / outdoor / large-scale surface reconstruc
   - Support using EmerNeRF for non-annotated objects.
 - **2023-09-23 [v0.5.2]**  
   - Support generative/shared permutohedral lattice for batched/dynamic/batched-dynamic objects. 
-    :fire: Significantly reduces the memory and time usage for training a multi-object scene: <u>one street with dozens of vehicles and dozens of pedestrians can be trained in 3 hours on a single RTX3090!</u>
-- **2023-08-22 [v0.5.1]** Finish StreetSurf open-source
-- **2022-11-17 [v0.4.2]** Total refactor to packed-info based volume buffers, for both single object training (named StreetSurf later) and multi-object training.
-- **2022-08-08 [v0.3.0]** Total refactor to scene-graph management with frustum culling, major overhaul on speed performance
+    :fire: Significantly reduces the memory and time usage for training a multi-object scene: one street with dozens of vehicles and dozens of pedestrians can be trained in 3 hours on a single RTX3090!
+- **2023-08-22 [v0.5.1]** Finish [StreetSurf](https://ventusff.github.io/streetsurf_web/) open-source
+- **2023-01-10** :rocket: Release first public post for the neuralsim system ([Chinese ver.](https://mp.weixin.qq.com/s?__biz=Mzg4NTg5MzIxMQ==&mid=2247483721&idx=1&sn=ade7e21d280fc9965a98fa0a1cda0536&chksm=cfa0b07df8d7396bcccbfeb4eed5d72b7060ca8d35c702c32b733a037adf91252b5740e6375a#rd)).
+- **2022-11-17 [v0.4.2]** Totally refactored to packed-info based volume buffers, for both single object training (named StreetSurf later) and multi-object training.
+- **2022-08-08 [v0.3.0]** Totally refactored to scene-graph management with frustum culling, major overhaul on speed performance
 - **2022-07-04 [v0.2.0]**
   - Major overhaul on street-view training (data loading, LoTD repr., sky/mask, sparsity & regularizations.)
   - Major overhaul on multi-object rendering (batched query & BufferComposeRenderer)
